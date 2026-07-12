@@ -1,0 +1,10 @@
+{
+  "version": "1.0.0",
+  "allowed_read_roots": ["workspace", "inputs"],
+  "allowed_write_roots": ["artifacts"],
+  "blocked_command_tokens": ["sudo", "shutdown", "reboot", "mkfs", "dd", "chmod", "chown"],
+  "blocked_shell_operators": [">", ">>", "<", "|", ";", "&&", "||", "`", "$("],
+  "sandbox_command_tokens": ["python", "python3", "bash", "sh", "npm", "pip", "curl", "wget"],
+  "max_command_length": 500
+}
+

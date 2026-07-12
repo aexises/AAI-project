@@ -1,0 +1,177 @@
+"""Shared, ownership-neutral contracts used across TraceGuard."""
+
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from enum import Enum
+from typing import Any
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+
+class StrictModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", validate_assignment=True)
+
+
+class Decision(str, Enum):
+    ALLOW = "ALLOW"
+    BLOCK = "BLOCK"
+    ESCALATE = "ESCALATE"
+    REWRITE = "REWRITE"
+
+
+class GoalRelevance(str, Enum):
+    IRRELEVANT = "IRRELEVANT"
+    WEAK = "WEAK"
+    STRONG = "STRONG"
+
+
+class GoalNecessity(str, Enum):
+    UNNECESSARY = "UNNECESSARY"
+    HELPFUL = "HELPFUL"
+    NECESSARY = "NECESSARY"
+
+
+class RiskLevel(str, Enum):
+    LOW = "LOW"
+    MEDIUM = "MEDIUM"
+    HIGH = "HIGH"
+    CRITICAL = "CRITICAL"
+
+
+class TrustLabel(str, Enum):
+    TRUSTED_SYSTEM = "TRUSTED_SYSTEM"
+    USER_INPUT = "USER_INPUT"
+    TRUSTED_TOOL = "TRUSTED_TOOL"
+    UNTRUSTED_DOCUMENT = "UNTRUSTED_DOCUMENT"
+    UNTRUSTED_TOOL = "UNTRUSTED_TOOL"
+    AGENT_GENERATED = "AGENT_GENERATED"
+
+
+class ExecutionTarget(str, Enum):
+    DEFAULT = "DEFAULT"
+    CONTAINER = "CONTAINER"
+    SIMULATED = "SIMULATED"
+
+
+class PostRunDisposition(str, Enum):
+    ACCEPT_RESULT = "ACCEPT_RESULT"
+    REWRITE_AND_RETRY = "REWRITE_AND_RETRY"
+    BLOCK_RESULT = "BLOCK_RESULT"
+    ESCALATE = "ESCALATE"
+
+
+class ThreatModel(str, Enum):
+    BENIGN = "BENIGN"
+    POLICY_VIOLATION = "POLICY_VIOLATION"
+    DIRECT_ATTACK = "DIRECT_ATTACK"
+    INDIRECT_INJECTION = "INDIRECT_INJECTION"
+
+
+class ToolCall(StrictModel):
+    task_id: str
+    step_id: int = Field(ge=0)
+    tool_name: str = Field(min_length=1)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    consumed_observation_ids: list[str] = Field(default_factory=list)
+    requested_resources: list[str] = Field(default_factory=list)
+    call_id: str = Field(default_factory=lambda: str(uuid4()))
+
+
+class Observation(StrictModel):
+    content: str
+    source_type: str
+    source_id: str
+    trust: TrustLabel
+    provenance_chain: list[str] = Field(default_factory=list)
+    may_contain_instructions: bool = False
+    observation_id: str = Field(default_factory=lambda: str(uuid4()))
+
+
+class SupervisorOutput(StrictModel):
+    decision: Decision
+    risk: RiskLevel
+    confidence: float = Field(ge=0.0, le=1.0)
+    policy_violation: bool
+    goal_relevance: GoalRelevance
+    goal_necessity: GoalNecessity
+    reason: str = Field(min_length=1)
+    matched_rules: list[str] = Field(default_factory=list)
+    rewritten_call: ToolCall | None = None
+    execution_target: ExecutionTarget | None = None
+    container_profile: str | None = None
+
+    @model_validator(mode="after")
+    def validate_decision_payload(self) -> SupervisorOutput:
+        if self.decision is Decision.REWRITE and self.rewritten_call is None:
+            raise ValueError("REWRITE requires rewritten_call")
+        if self.execution_target is ExecutionTarget.CONTAINER and not self.container_profile:
+            raise ValueError("CONTAINER target requires container_profile")
+        return self
+
+
+class SandboxLimits(StrictModel):
+    timeout_seconds: int = Field(default=20, ge=1, le=300)
+    memory_mb: int = Field(default=256, ge=32, le=4096)
+    cpu_count: float = Field(default=1.0, gt=0, le=4)
+    pids: int = Field(default=64, ge=1, le=512)
+    output_bytes: int = Field(default=65536, ge=1024, le=1048576)
+
+
+class ExecutionPlan(StrictModel):
+    effective_call: ToolCall
+    target: ExecutionTarget
+    sandbox_profile: str | None = None
+    limits: SandboxLimits = Field(default_factory=SandboxLimits)
+    validated: bool = False
+    validation_reason: str = ""
+
+    @model_validator(mode="after")
+    def validate_profile(self) -> ExecutionPlan:
+        if self.target is ExecutionTarget.CONTAINER and not self.sandbox_profile:
+            raise ValueError("container execution requires a sandbox profile")
+        return self
+
+
+class SandboxEvidence(StrictModel):
+    exit_code: int | None = None
+    stdout: str = ""
+    stderr: str = ""
+    files_changed: list[str] = Field(default_factory=list)
+    blocked_operations: list[str] = Field(default_factory=list)
+    duration_ms: float = Field(default=0.0, ge=0.0)
+    peak_memory_bytes: int | None = Field(default=None, ge=0)
+    timed_out: bool = False
+    profile: str
+
+
+class PostRunAssessment(StrictModel):
+    risk: RiskLevel
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence: list[str] = Field(default_factory=list)
+    disposition: PostRunDisposition
+    reason: str
+
+
+class TraceEvent(StrictModel):
+    task_id: str
+    step_id: int
+    proposed_call: ToolCall
+    effective_call: ToolCall | None = None
+    safeguard_outputs: list[SupervisorOutput] = Field(default_factory=list)
+    execution_plan: ExecutionPlan | None = None
+    result_observation_id: str | None = None
+    result_digest: str | None = None
+    latency_ms: float = Field(default=0.0, ge=0.0)
+    token_usage: int = Field(default=0, ge=0)
+    episode_outcome: str | None = None
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class SafeguardConfig(StrictModel):
+    defensive_prompt: bool = False
+    deterministic_policy: bool = False
+    llm_supervisor: bool = False
+    post_run_reevaluation: bool = False
+
