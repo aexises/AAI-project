@@ -2,6 +2,8 @@
 
 TraceGuard is a research runtime for evaluating system-prompt defenses, deterministic policy, and LLM supervision for tool-using agents. Docker is used only as a conditional containment mechanism for uncertain, medium-risk command calls.
 
+The owner-specific implementation and research checklist is in [`TODO.md`](TODO.md).
+
 ## Setup
 
 ```bash
@@ -41,4 +43,3 @@ Post-run reevaluation consumes bounded, untrusted sandbox evidence. It never aut
 ## Benchmarking
 
 AgentDojo is pinned to `0.1.35`. Custom cases in `benchmarks/cases/custom_cases.json` keep policy violations, direct attacks, and indirect injections distinct. Experiment runners must use paired task/model seeds across the eight configurations in `configs/ablations.json` and record outputs under `artifacts/`.
-
