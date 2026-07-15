@@ -25,6 +25,24 @@ python -m traceguard smoke
 
 The smoke run uses the deterministic policy and offline heuristic supervisor. It does not require credentials, Ollama, AgentDojo, or Docker.
 
+## Experiments
+
+```bash
+# one case + one ablation
+python -m traceguard experiment --split dev --case benign_math_dev --ablation A2
+
+# full eight-ablation matrix on the development split
+python -m traceguard experiment --split dev --seed 0
+
+# held-out custom cases
+python -m traceguard experiment --split test --seed 0
+
+# AgentDojo pin + selected suites/tasks
+python -m traceguard agentdojo-info
+```
+
+Traces, manifests, CSV/JSON summaries are written under `artifacts/run_*`. Pairing keeps the same per-case seed across ablations.
+
 ## Repository layout
 
 - `src/traceguard/supervisor/`: Gemini, Ollama, and offline supervisors.

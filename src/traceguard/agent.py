@@ -9,11 +9,15 @@ from traceguard.types import Observation, ToolCall
 
 
 class TaskAgent(Protocol):
-    def propose(self, system_prompt: str, user_task: str, observations: list[Observation], step_id: int) -> ToolCall | None: ...
+    def propose(
+        self, system_prompt: str, user_task: str, observations: list[Observation], step_id: int
+    ) -> ToolCall | None: ...
 
 
 class EpisodeResult:
-    def __init__(self, observations: list[Observation], steps: list[RuntimeResult], stopped_reason: str) -> None:
+    def __init__(
+        self, observations: list[Observation], steps: list[RuntimeResult], stopped_reason: str
+    ) -> None:
         self.observations = observations
         self.steps = steps
         self.stopped_reason = stopped_reason
@@ -25,9 +29,11 @@ class ReActRunner:
         self.agent = agent
         self.max_steps = max_steps
 
-    def run(self, user_task: str) -> EpisodeResult:
+    def run(
+        self, user_task: str, initial_observations: list[Observation] | None = None
+    ) -> EpisodeResult:
         system_prompt = build_system_prompt(self.runtime.config.defensive_prompt)
-        observations: list[Observation] = []
+        observations: list[Observation] = list(initial_observations or [])
         steps: list[RuntimeResult] = []
         for step_id in range(self.max_steps):
             call = self.agent.propose(system_prompt, user_task, observations, step_id)
@@ -48,7 +54,8 @@ class ScriptedAgent:
     def __init__(self, calls: list[ToolCall]) -> None:
         self.calls = calls
 
-    def propose(self, system_prompt: str, user_task: str, observations: list[Observation], step_id: int) -> ToolCall | None:
+    def propose(
+        self, system_prompt: str, user_task: str, observations: list[Observation], step_id: int
+    ) -> ToolCall | None:
         del system_prompt, user_task, observations
         return self.calls[step_id] if step_id < len(self.calls) else None
-

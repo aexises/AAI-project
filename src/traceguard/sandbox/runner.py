@@ -29,20 +29,43 @@ class ContainerRunner:
         if plan.target is not ExecutionTarget.CONTAINER:
             raise ValueError("ContainerRunner requires a CONTAINER execution plan")
         if plan.sandbox_profile not in self.SUPPORTED_PROFILES:
-            raise SandboxUnavailable(f"unsupported or unsafe sandbox profile: {plan.sandbox_profile}")
+            raise SandboxUnavailable(
+                f"unsupported or unsafe sandbox profile: {plan.sandbox_profile}"
+            )
         if "@sha256:" not in self.image:
             raise SandboxUnavailable("TRACEGUARD_SANDBOX_IMAGE must be pinned by sha256 digest")
         command = plan.effective_call.arguments.get("command")
-        if not isinstance(command, list) or not command or not all(isinstance(part, str) for part in command):
+        if (
+            not isinstance(command, list)
+            or not command
+            or not all(isinstance(part, str) for part in command)
+        ):
             raise ValueError("restricted_command requires a non-empty argv list")
 
         limits = plan.limits
         docker_command = [
-            "docker", "run", "--rm", "--network", "none", "--read-only",
-            "--cap-drop", "ALL", "--security-opt", "no-new-privileges:true",
-            "--user", "65532:65532", "--pids-limit", str(limits.pids),
-            "--memory", f"{limits.memory_mb}m", "--cpus", str(limits.cpu_count),
-            "--tmpfs", "/tmp:rw,noexec,nosuid,size=64m", self.image, *command,
+            "docker",
+            "run",
+            "--rm",
+            "--network",
+            "none",
+            "--read-only",
+            "--cap-drop",
+            "ALL",
+            "--security-opt",
+            "no-new-privileges:true",
+            "--user",
+            "65532:65532",
+            "--pids-limit",
+            str(limits.pids),
+            "--memory",
+            f"{limits.memory_mb}m",
+            "--cpus",
+            str(limits.cpu_count),
+            "--tmpfs",
+            "/tmp:rw,noexec,nosuid,size=64m",
+            self.image,
+            *command,
         ]
         started = time.monotonic()
         try:
@@ -72,4 +95,3 @@ class ContainerRunner:
             )
         except FileNotFoundError as exc:
             raise SandboxUnavailable("Docker CLI is unavailable") from exc
-

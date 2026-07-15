@@ -174,4 +174,3 @@ class SafeguardConfig(StrictModel):
     deterministic_policy: bool = False
     llm_supervisor: bool = False
     post_run_reevaluation: bool = False
-

@@ -36,4 +36,3 @@ def test_container_target_requires_profile():
             reason="contain",
             execution_target=ExecutionTarget.CONTAINER,
         )
-

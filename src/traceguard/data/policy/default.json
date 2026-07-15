@@ -1,10 +1,15 @@
 {
-  "version": "1.0.0",
-  "allowed_read_roots": ["workspace", "inputs"],
+  "version": "1.1.0",
+  "allowed_read_roots": ["workspace", "inputs", "documents"],
   "allowed_write_roots": ["artifacts"],
-  "blocked_command_tokens": ["sudo", "shutdown", "reboot", "mkfs", "dd", "chmod", "chown"],
+  "blocked_path_segments": ["secrets", "credentials", "canary", ".ssh", ".aws"],
+  "blocked_command_tokens": ["sudo", "shutdown", "reboot", "mkfs", "dd", "chmod", "chown", "rm", "kill"],
   "blocked_shell_operators": [">", ">>", "<", "|", ";", "&&", "||", "`", "$("],
   "sandbox_command_tokens": ["python", "python3", "bash", "sh", "npm", "pip", "curl", "wget"],
-  "max_command_length": 500
+  "benign_command_tokens": ["echo", "printf", "true", "false", "uname", "date"],
+  "math_goal_keywords": ["calculate", "compute", "multiply", "divide", "add", "subtract", "times", "math"],
+  "write_goal_keywords": ["write", "report", "save", "summarize into", "create report"],
+  "read_goal_keywords": ["read", "open", "summarize", "inspect", "find", "search"],
+  "max_command_length": 500,
+  "max_requested_resources": 4
 }
-
