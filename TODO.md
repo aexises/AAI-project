@@ -7,7 +7,7 @@ This checklist starts from the current scaffold. Check off an item only when its
 - [ ] Agree on and tag `types-v1`: review every model and enum in `src/traceguard/types.py`; record approved semantics for `REWRITE`, relevance, necessity, risk, trust, and execution targets.
 - [ ] Add contract fixtures shared by all workstreams: one benign call, one direct attack, one indirect injection, one policy violation, one rewrite, and one container-routed call.
 - [ ] Define the policy for conflicting deterministic and LLM outputs, including which component may lower risk and when `ESCALATE` requires human input.
-- [ ] Define experiment manifests containing code revision, AgentDojo version, model identifiers, prompt versions, policy version, image digest, seed, temperature, and enabled safeguards.
+- [x] Define experiment manifests containing code revision, AgentDojo version, model identifiers, prompt versions, policy version, image digest, seed, temperature, and enabled safeguards.
 - [ ] Add CI for Python 3.11 with `pytest`, `ruff check .`, and `ruff format --check .`.
 - [ ] Run an end-to-end smoke set before full experiments: at least five benign, five policy-violation, five direct-attack, and five indirect-injection episodes.
 - [ ] Freeze benchmark cases and labels before collecting final results; changes afterward require a new benchmark version.
@@ -96,43 +96,43 @@ Owns `src/traceguard/tools/`, `src/traceguard/policy/`, `benchmarks/`, experimen
 
 ### P3.1 Tools and deterministic policy
 
-- [ ] Review each tool schema and document its side effects, risk class, trusted inputs, and trusted output label.
-- [ ] Replace in-memory document search with an AgentDojo-compatible or fixture-backed document environment while preserving provenance.
-- [ ] Add size and encoding limits to file reads and report writes.
-- [ ] Keep calculator parsing AST-based and add tests for exponent/resource abuse, names, calls, attributes, and malformed input.
-- [ ] Ensure `restricted_command` cannot execute directly on the host; it must remain simulated or receive an approved container plan.
-- [ ] Expand deterministic rules for allowed paths, required resources, irrelevant tool use, unnecessary permissions, and untrusted-observation dependencies.
-- [ ] Version policy files and include the policy version in every trace and experiment manifest.
-- [ ] Add deterministic golden cases for all decisions, including safe argument/path rewrites.
+- [x] Review each tool schema and document its side effects, risk class, trusted inputs, and trusted output label.
+- [x] Replace in-memory document search with an AgentDojo-compatible or fixture-backed document environment while preserving provenance.
+- [x] Add size and encoding limits to file reads and report writes.
+- [x] Keep calculator parsing AST-based and add tests for exponent/resource abuse, names, calls, attributes, and malformed input.
+- [x] Ensure `restricted_command` cannot execute directly on the host; it must remain simulated or receive an approved container plan.
+- [x] Expand deterministic rules for allowed paths, required resources, irrelevant tool use, unnecessary permissions, and untrusted-observation dependencies.
+- [x] Version policy files and include the policy version in every trace and experiment manifest.
+- [x] Add deterministic golden cases for all decisions, including safe argument/path rewrites.
 
 ### P3.2 AgentDojo and custom attacks
 
-- [ ] Install and validate pinned AgentDojo `0.1.35` in the Python 3.11 environment.
+- [x] Install and validate pinned AgentDojo `0.1.35` in the Python 3.11 environment.
 - [ ] Replace the metadata-only adapter with a native AgentDojo suite/runner integration using its task, injection, utility, and security checks.
-- [ ] Select and document the AgentDojo suites and task IDs used for the primary indirect-injection evaluation.
-- [ ] Expand each threat model to a reviewed development set and a held-out test set; do not reuse test cases for prompt or rule tuning.
-- [ ] Add direct attacks covering disclosure, destructive requests, policy circumvention, and social-engineering variants.
-- [ ] Add policy violations covering irrelevant access, excessive permissions, unsafe arguments, and unnecessary commands without adversarial text.
-- [ ] Add indirect injections in documents, search results, files, terminal output, and simulated cybersecurity artifacts.
-- [ ] Implement executable utility and security checkers for every custom case; remove placeholder checker descriptions before final evaluation.
-- [ ] Use only harmless canaries, simulated services, and disposable containers; prohibit real credentials and external attack targets.
+- [x] Select and document the AgentDojo suites and task IDs used for the primary indirect-injection evaluation.
+- [x] Expand each threat model to a reviewed development set and a held-out test set; do not reuse test cases for prompt or rule tuning.
+- [x] Add direct attacks covering disclosure, destructive requests, policy circumvention, and social-engineering variants.
+- [x] Add policy violations covering irrelevant access, excessive permissions, unsafe arguments, and unnecessary commands without adversarial text.
+- [x] Add indirect injections in documents, search results, files, terminal output, and simulated cybersecurity artifacts.
+- [x] Implement executable utility and security checkers for every custom case; remove placeholder checker descriptions before final evaluation.
+- [x] Use only harmless canaries, simulated services, and disposable containers; prohibit real credentials and external attack targets.
 
 ### P3.3 Experiment runner and analysis
 
-- [ ] Implement a CLI command that runs one case, one safeguard configuration, or the full eight-configuration matrix.
-- [ ] Guarantee paired seeds, identical user tasks, fixed model parameters, and frozen initial state across ablations.
-- [ ] Persist JSONL traces and a normalized result table under `artifacts/` without secrets or chain-of-thought.
-- [ ] Convert trace outcomes into call-level and episode-level metric records with validation for missing labels.
-- [ ] Add relevance/necessity macro-F1, containment success, post-run accuracy, risk-update rate, and useful recovery rate to aggregation.
-- [ ] Add bootstrap 95% confidence intervals and paired comparisons between ablations.
-- [ ] Report metrics separately for policy violations, direct attacks, indirect injections, benign tasks, and Docker-applicable tasks.
-- [ ] Generate report-ready CSV/JSON summaries and representative sanitized traces.
+- [x] Implement a CLI command that runs one case, one safeguard configuration, or the full eight-configuration matrix.
+- [x] Guarantee paired seeds, identical user tasks, fixed model parameters, and frozen initial state across ablations.
+- [x] Persist JSONL traces and a normalized result table under `artifacts/` without secrets or chain-of-thought.
+- [x] Convert trace outcomes into call-level and episode-level metric records with validation for missing labels.
+- [x] Add relevance/necessity macro-F1, containment success, post-run accuracy, risk-update rate, and useful recovery rate to aggregation.
+- [x] Add bootstrap 95% confidence intervals and paired comparisons between ablations.
+- [x] Report metrics separately for policy violations, direct attacks, indirect injections, benign tasks, and Docker-applicable tasks.
+- [x] Generate report-ready CSV/JSON summaries and representative sanitized traces.
 
 ### Person 3 done when
 
-- [ ] One command reproduces a smoke matrix and one command reproduces the frozen full evaluation.
-- [ ] Every benchmark case has executable utility and security checks and an explicit threat-model label.
-- [ ] Final tables can be regenerated from raw traces without manual editing.
+- [x] One command reproduces a smoke matrix and one command reproduces the frozen full evaluation.
+- [x] Every benchmark case has executable utility and security checks and an explicit threat-model label.
+- [x] Final tables can be regenerated from raw traces without manual editing.
 
 ## Final Team Deliverables
 

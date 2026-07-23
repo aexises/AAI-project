@@ -8,7 +8,9 @@ from traceguard.types import Observation, SandboxEvidence, SupervisorOutput, Too
 
 
 class Supervisor(Protocol):
-    def evaluate(self, user_task: str, call: ToolCall, observations: list[Observation]) -> SupervisorOutput: ...
+    def evaluate(
+        self, user_task: str, call: ToolCall, observations: list[Observation]
+    ) -> SupervisorOutput: ...
 
     def reevaluate(self, user_task: str, call: ToolCall, evidence: SandboxEvidence): ...
 
@@ -21,7 +23,9 @@ def merge_outputs(outputs: list[SupervisorOutput]) -> SupervisorOutput | None:
     if not outputs:
         return None
     winner = max(outputs, key=lambda output: _PRECEDENCE[output.decision.value])
-    container_outputs = [output for output in outputs if output.execution_target and output.container_profile]
+    container_outputs = [
+        output for output in outputs if output.execution_target and output.container_profile
+    ]
     if container_outputs and winner.decision.value not in {"BLOCK", "ESCALATE"}:
         strictest = max(container_outputs, key=lambda output: _RISK[output.risk.value])
         return winner.model_copy(

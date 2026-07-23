@@ -18,14 +18,19 @@ from traceguard.types import (
     PostRunAssessment,
     SafeguardConfig,
     SupervisorOutput,
+    ToolCall,
     TraceEvent,
     TrustLabel,
-    ToolCall,
 )
 
 
 class RuntimeResult:
-    def __init__(self, trace: TraceEvent, observation: Observation | None, post_run: PostRunAssessment | None = None) -> None:
+    def __init__(
+        self,
+        trace: TraceEvent,
+        observation: Observation | None,
+        post_run: PostRunAssessment | None = None,
+    ) -> None:
         self.trace = trace
         self.observation = observation
         self.post_run = post_run
@@ -50,13 +55,19 @@ class TraceGuardRuntime:
         if config.llm_supervisor and supervisor is None:
             raise ValueError("LLM supervisor is enabled but unavailable")
 
-    def execute_call(self, user_task: str, call: ToolCall, observations: list[Observation]) -> RuntimeResult:
+    def execute_call(
+        self, user_task: str, call: ToolCall, observations: list[Observation]
+    ) -> RuntimeResult:
         started = time.monotonic()
         outputs = self._evaluate(user_task, call, observations)
         merged = merge_outputs(outputs)
-        effective_call = merged.rewritten_call if merged and merged.decision is Decision.REWRITE else call
+        effective_call = (
+            merged.rewritten_call if merged and merged.decision is Decision.REWRITE else call
+        )
         if merged and merged.decision in {Decision.BLOCK, Decision.ESCALATE}:
-            trace = self._trace(call, effective_call, outputs, None, None, started, merged.decision.value)
+            trace = self._trace(
+                call, effective_call, outputs, None, None, started, merged.decision.value
+            )
             return RuntimeResult(trace, None)
 
         original_rewrite = merged if merged and merged.decision is Decision.REWRITE else None
@@ -65,7 +76,9 @@ class TraceGuardRuntime:
             outputs.extend(reevaluated)
             second = merge_outputs(reevaluated)
             if second and second.decision in {Decision.BLOCK, Decision.ESCALATE, Decision.REWRITE}:
-                outcome = "ESCALATE" if second.decision is Decision.REWRITE else second.decision.value
+                outcome = (
+                    "ESCALATE" if second.decision is Decision.REWRITE else second.decision.value
+                )
                 trace = self._trace(call, effective_call, outputs, None, None, started, outcome)
                 return RuntimeResult(trace, None)
             merged = second or original_rewrite
@@ -107,14 +120,18 @@ class TraceGuardRuntime:
             post_run = None
             if self.config.post_run_reevaluation and self.supervisor:
                 post_run = self.supervisor.reevaluate(user_task, effective_call, evidence)
-            trace = self._trace(call, effective_call, outputs, plan, observation, started, "EXECUTED_CONTAINER")
+            trace = self._trace(
+                call, effective_call, outputs, plan, observation, started, "EXECUTED_CONTAINER"
+            )
             return RuntimeResult(trace, observation, post_run)
 
         observation = self.tools.execute(effective_call)
         trace = self._trace(call, effective_call, outputs, plan, observation, started, "EXECUTED")
         return RuntimeResult(trace, observation)
 
-    def _evaluate(self, user_task: str, call: ToolCall, observations: list[Observation]) -> list[SupervisorOutput]:
+    def _evaluate(
+        self, user_task: str, call: ToolCall, observations: list[Observation]
+    ) -> list[SupervisorOutput]:
         outputs: list[SupervisorOutput] = []
         if self.config.deterministic_policy:
             assert self.policy is not None

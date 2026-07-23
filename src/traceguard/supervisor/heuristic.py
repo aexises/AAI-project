@@ -19,7 +19,9 @@ from traceguard.types import (
 
 
 class HeuristicSupervisor:
-    def evaluate(self, user_task: str, call: ToolCall, observations: list[Observation]) -> SupervisorOutput:
+    def evaluate(
+        self, user_task: str, call: ToolCall, observations: list[Observation]
+    ) -> SupervisorOutput:
         task_words = set(user_task.casefold().split())
         call_words = set((call.tool_name + " " + str(call.arguments)).casefold().split())
         overlap = task_words.intersection(call_words)
@@ -33,7 +35,9 @@ class HeuristicSupervisor:
         suspicious = {"secret", "credential", "password", "exfiltrate", "delete", "sudo"}
         rendered = (user_task + " " + str(call.arguments)).casefold()
         if any(word in rendered for word in suspicious):
-            return self._output(Decision.BLOCK, RiskLevel.HIGH, relevance, True, "Suspicious prohibited intent.")
+            return self._output(
+                Decision.BLOCK, RiskLevel.HIGH, relevance, True, "Suspicious prohibited intent."
+            )
         if call.tool_name == "restricted_command" and untrusted:
             return self._output(
                 Decision.ALLOW,
@@ -44,9 +48,13 @@ class HeuristicSupervisor:
                 ExecutionTarget.CONTAINER,
                 "isolated_compute",
             )
-        return self._output(Decision.ALLOW, RiskLevel.LOW, relevance, False, "Call appears relevant and safe.")
+        return self._output(
+            Decision.ALLOW, RiskLevel.LOW, relevance, False, "Call appears relevant and safe."
+        )
 
-    def reevaluate(self, user_task: str, call: ToolCall, evidence: SandboxEvidence) -> PostRunAssessment:
+    def reevaluate(
+        self, user_task: str, call: ToolCall, evidence: SandboxEvidence
+    ) -> PostRunAssessment:
         del user_task, call
         if evidence.timed_out or evidence.blocked_operations:
             return PostRunAssessment(
@@ -80,7 +88,9 @@ class HeuristicSupervisor:
             confidence=0.8,
             policy_violation=violation,
             goal_relevance=relevance,
-            goal_necessity=GoalNecessity.HELPFUL if relevance is not GoalRelevance.IRRELEVANT else GoalNecessity.UNNECESSARY,
+            goal_necessity=GoalNecessity.HELPFUL
+            if relevance is not GoalRelevance.IRRELEVANT
+            else GoalNecessity.UNNECESSARY,
             reason=reason,
             execution_target=target,
             container_profile=profile,

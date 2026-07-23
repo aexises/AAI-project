@@ -1,4 +1,8 @@
-"""Typed tools with narrow, testable side-effect boundaries."""
+"""Typed tools with narrow, testable side-effect boundaries.
+
+Each tool declares side effects, risk class, trusted inputs, and output trust so
+deterministic policy and supervisors can reason about calls without guessing.
+"""
 
 from __future__ import annotations
 
@@ -6,12 +10,36 @@ import ast
 import json
 import operator
 from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path, PurePath
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from traceguard.types import Observation, ToolCall, TrustLabel
+from traceguard.types import Observation, RiskLevel, ToolCall, TrustLabel
+
+MAX_READ_BYTES = 262_144  # 256 KiB
+MAX_WRITE_BYTES = 1_000_000
+MAX_CALC_ABS_VALUE = 1e12
+MAX_CALC_POW_EXPONENT = 8
+MAX_CALC_NODES = 64
+
+
+RiskClass = Literal["read", "write", "compute", "command"]
+
+
+@dataclass(frozen=True)
+class ToolSpec:
+    """Static documentation and risk metadata for a registered tool."""
+
+    name: str
+    side_effects: str
+    risk_class: RiskClass
+    default_risk: RiskLevel
+    trusted_inputs: str
+    trusted_output: TrustLabel
+    host_execution: bool
+    notes: str = ""
 
 
 class ToolArguments(BaseModel):
@@ -24,7 +52,7 @@ class SearchDocumentsArguments(ToolArguments):
 
 
 class ReadFileArguments(ToolArguments):
-    path: str
+    path: str = Field(min_length=1, max_length=512)
 
 
 class CalculatorArguments(ToolArguments):
@@ -32,8 +60,8 @@ class CalculatorArguments(ToolArguments):
 
 
 class WriteReportArguments(ToolArguments):
-    path: str
-    content: str = Field(max_length=1_000_000)
+    path: str = Field(min_length=1, max_length=512)
+    content: str = Field(max_length=MAX_WRITE_BYTES)
 
 
 class RestrictedCommandArguments(ToolArguments):
@@ -47,11 +75,13 @@ class ToolDefinition:
         arguments_model: type[ToolArguments],
         handler: Callable[[ToolArguments], str],
         trust: TrustLabel,
+        spec: ToolSpec,
     ) -> None:
         self.name = name
         self.arguments_model = arguments_model
         self.handler = handler
         self.trust = trust
+        self.spec = spec
 
     def validate(self, arguments: dict[str, Any]) -> ToolArguments:
         return self.arguments_model.model_validate(arguments)
@@ -73,7 +103,12 @@ class ToolRegistry:
             raise KeyError(f"unknown tool: {name}") from exc
 
     def schemas(self) -> dict[str, dict[str, Any]]:
-        return {name: tool.arguments_model.model_json_schema() for name, tool in self._tools.items()}
+        return {
+            name: tool.arguments_model.model_json_schema() for name, tool in self._tools.items()
+        }
+
+    def catalog(self) -> dict[str, ToolSpec]:
+        return {name: tool.spec for name, tool in self._tools.items()}
 
     def execute(self, call: ToolCall) -> Observation:
         tool = self.get(call.tool_name)
@@ -85,7 +120,8 @@ class ToolRegistry:
             source_id=call.call_id,
             trust=tool.trust,
             provenance_chain=[*call.consumed_observation_ids, call.call_id],
-            may_contain_instructions=tool.trust in {
+            may_contain_instructions=tool.trust
+            in {
                 TrustLabel.UNTRUSTED_DOCUMENT,
                 TrustLabel.UNTRUSTED_TOOL,
             },
@@ -105,16 +141,79 @@ _OPERATORS: dict[type[ast.AST], Callable[..., float]] = {
 }
 
 
-def _calculate(node: ast.AST) -> float:
+def _calculate(node: ast.AST, *, budget: list[int] | None = None) -> float:
+    if budget is None:
+        budget = [MAX_CALC_NODES]
+    budget[0] -= 1
+    if budget[0] < 0:
+        raise ValueError("calculator expression too complex")
+
     if isinstance(node, ast.Expression):
-        return _calculate(node.body)
-    if isinstance(node, ast.Constant) and isinstance(node.value, (int, float)):
-        return float(node.value)
+        return _calculate(node.body, budget=budget)
+    if (
+        isinstance(node, ast.Constant)
+        and isinstance(node.value, (int, float))
+        and not isinstance(node.value, bool)
+    ):
+        value = float(node.value)
+        if abs(value) > MAX_CALC_ABS_VALUE:
+            raise ValueError("calculator literal out of bounds")
+        return value
     if isinstance(node, ast.BinOp) and type(node.op) in _OPERATORS:
-        return _OPERATORS[type(node.op)](_calculate(node.left), _calculate(node.right))
+        left = _calculate(node.left, budget=budget)
+        right = _calculate(node.right, budget=budget)
+        if isinstance(node.op, ast.Pow):
+            if abs(right) > MAX_CALC_POW_EXPONENT or abs(left) > 1_000:
+                raise ValueError("exponentiation exceeds safety limits")
+        result = _OPERATORS[type(node.op)](left, right)
+        if abs(result) > MAX_CALC_ABS_VALUE:
+            raise ValueError("calculator result out of bounds")
+        return float(result)
     if isinstance(node, ast.UnaryOp) and type(node.op) in _OPERATORS:
-        return _OPERATORS[type(node.op)](_calculate(node.operand))
+        return _OPERATORS[type(node.op)](_calculate(node.operand, budget=budget))
+    if isinstance(
+        node, (ast.Name, ast.Attribute, ast.Call, ast.Subscript, ast.List, ast.Dict, ast.Tuple)
+    ):
+        raise ValueError("names, calls, and compound literals are not allowed")
     raise ValueError("unsupported calculator expression")
+
+
+def evaluate_expression(expression: str) -> float:
+    """Parse and evaluate a calculator expression with safety limits."""
+    return _calculate(ast.parse(expression, mode="eval"))
+
+
+def _read_text_bounded(path: Path, *, max_bytes: int = MAX_READ_BYTES) -> str:
+    size = path.stat().st_size
+    if size > max_bytes:
+        raise ValueError(f"file exceeds read limit of {max_bytes} bytes")
+    raw = path.read_bytes()
+    if len(raw) > max_bytes:
+        raise ValueError(f"file exceeds read limit of {max_bytes} bytes")
+    try:
+        return raw.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("file is not valid UTF-8") from exc
+
+
+def _load_document_corpus(workspace: Path) -> list[str]:
+    """Load fixture-backed documents from workspace/documents/ when present."""
+    docs_dir = workspace / "documents"
+    if not docs_dir.is_dir():
+        return []
+    documents: list[str] = []
+    for path in sorted(docs_dir.rglob("*")):
+        if not path.is_file():
+            continue
+        relative = path.relative_to(workspace).as_posix()
+        text = _read_text_bounded(path)
+        documents.append(json.dumps({"path": relative, "text": text}, ensure_ascii=True))
+    manifest = workspace / "documents.json"
+    if manifest.is_file():
+        payload = json.loads(_read_text_bounded(manifest))
+        if isinstance(payload, list):
+            documents.extend(str(item) for item in payload)
+    return documents
 
 
 def default_registry(workspace: Path, artifacts: Path) -> ToolRegistry:
@@ -130,35 +229,148 @@ def default_registry(workspace: Path, artifacts: Path) -> ToolRegistry:
     def search_documents(args: ToolArguments) -> str:
         assert isinstance(args, SearchDocumentsArguments)
         query = args.query.casefold()
-        matches = [doc for doc in args.documents if query in doc.casefold()]
-        return json.dumps(matches)
+        corpus = list(args.documents) if args.documents else _load_document_corpus(workspace)
+        matches = [doc for doc in corpus if query in doc.casefold()]
+        return json.dumps(
+            {
+                "query": args.query,
+                "source": "arguments" if args.documents else "workspace_fixtures",
+                "matches": matches,
+            }
+        )
 
     def read_file(args: ToolArguments) -> str:
         assert isinstance(args, ReadFileArguments)
-        return contained(workspace, args.path).read_text(encoding="utf-8")
+        path = contained(workspace, args.path)
+        if not path.is_file():
+            raise ValueError(f"file not found: {args.path}")
+        return _read_text_bounded(path)
 
     def calculator(args: ToolArguments) -> str:
         assert isinstance(args, CalculatorArguments)
-        result = _calculate(ast.parse(args.expression, mode="eval"))
+        result = evaluate_expression(args.expression)
         return str(int(result) if result.is_integer() else result)
 
     def write_report(args: ToolArguments) -> str:
         assert isinstance(args, WriteReportArguments)
+        encoded = args.content.encode("utf-8")
+        if len(encoded) > MAX_WRITE_BYTES:
+            raise ValueError(f"report exceeds write limit of {MAX_WRITE_BYTES} bytes")
         parts = PurePath(args.path).parts
         relative_path = str(Path(*parts[1:])) if parts and parts[0] == "artifacts" else args.path
         destination = contained(artifacts, relative_path)
         destination.parent.mkdir(parents=True, exist_ok=True)
-        destination.write_text(args.content, encoding="utf-8")
+        destination.write_bytes(encoded)
         return str(destination.relative_to(artifacts))
 
     def restricted_command(args: ToolArguments) -> str:
         assert isinstance(args, RestrictedCommandArguments)
-        return json.dumps({"status": "requires_execution_plan", "command": args.command})
+        # Never invokes a host shell. Runtime may replace this with an approved container plan.
+        return json.dumps(
+            {
+                "status": "simulated",
+                "marker": "TRACEGUARD_REQUIRES_EXECUTION_PLAN",
+                "command": args.command,
+                "host_execution": False,
+            }
+        )
 
     registry = ToolRegistry()
-    registry.register(ToolDefinition("search_documents", SearchDocumentsArguments, search_documents, TrustLabel.UNTRUSTED_DOCUMENT))
-    registry.register(ToolDefinition("read_file", ReadFileArguments, read_file, TrustLabel.UNTRUSTED_DOCUMENT))
-    registry.register(ToolDefinition("calculator", CalculatorArguments, calculator, TrustLabel.TRUSTED_TOOL))
-    registry.register(ToolDefinition("write_report", WriteReportArguments, write_report, TrustLabel.TRUSTED_TOOL))
-    registry.register(ToolDefinition("restricted_command", RestrictedCommandArguments, restricted_command, TrustLabel.UNTRUSTED_TOOL))
+    registry.register(
+        ToolDefinition(
+            "search_documents",
+            SearchDocumentsArguments,
+            search_documents,
+            TrustLabel.UNTRUSTED_DOCUMENT,
+            ToolSpec(
+                name="search_documents",
+                side_effects=(
+                    "Read-only search over supplied documents or workspace/documents fixtures."
+                ),
+                risk_class="read",
+                default_risk=RiskLevel.LOW,
+                trusted_inputs=(
+                    "User query string; document list or fixture files under workspace/documents."
+                ),
+                trusted_output=TrustLabel.UNTRUSTED_DOCUMENT,
+                host_execution=False,
+                notes="Matches are untrusted and may embed indirect instructions.",
+            ),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            "read_file",
+            ReadFileArguments,
+            read_file,
+            TrustLabel.UNTRUSTED_DOCUMENT,
+            ToolSpec(
+                name="read_file",
+                side_effects="Reads a UTF-8 text file under the workspace root; no writes.",
+                risk_class="read",
+                default_risk=RiskLevel.MEDIUM,
+                trusted_inputs="Relative path within workspace (enforced by containment).",
+                trusted_output=TrustLabel.UNTRUSTED_DOCUMENT,
+                host_execution=False,
+                notes=f"Hard-capped at {MAX_READ_BYTES} bytes; UTF-8 only.",
+            ),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            "calculator",
+            CalculatorArguments,
+            calculator,
+            TrustLabel.TRUSTED_TOOL,
+            ToolSpec(
+                name="calculator",
+                side_effects="Pure arithmetic evaluation; no filesystem or network access.",
+                risk_class="compute",
+                default_risk=RiskLevel.LOW,
+                trusted_inputs="Numeric AST expression without names, calls, or attributes.",
+                trusted_output=TrustLabel.TRUSTED_TOOL,
+                host_execution=False,
+                notes="Rejects exponent/resource abuse and non-literal expressions.",
+            ),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            "write_report",
+            WriteReportArguments,
+            write_report,
+            TrustLabel.TRUSTED_TOOL,
+            ToolSpec(
+                name="write_report",
+                side_effects="Creates or overwrites a report file under the artifacts root.",
+                risk_class="write",
+                default_risk=RiskLevel.MEDIUM,
+                trusted_inputs="Relative path under artifacts and UTF-8 report content.",
+                trusted_output=TrustLabel.TRUSTED_TOOL,
+                host_execution=False,
+                notes=f"Hard-capped at {MAX_WRITE_BYTES} UTF-8 bytes.",
+            ),
+        )
+    )
+    registry.register(
+        ToolDefinition(
+            "restricted_command",
+            RestrictedCommandArguments,
+            restricted_command,
+            TrustLabel.UNTRUSTED_TOOL,
+            ToolSpec(
+                name="restricted_command",
+                side_effects=(
+                    "Returns a simulated execution marker only. Never runs a host shell; "
+                    "container execution requires an approved runtime plan."
+                ),
+                risk_class="command",
+                default_risk=RiskLevel.HIGH,
+                trusted_inputs="Argv list without shell operators (policy-enforced).",
+                trusted_output=TrustLabel.UNTRUSTED_TOOL,
+                host_execution=False,
+                notes="Host execution is forbidden by construction in the tool handler.",
+            ),
+        )
+    )
     return registry

@@ -24,7 +24,7 @@ traceguard = "traceguard.cli:main"
 packages = ["src/traceguard"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "."]
 testpaths = ["tests"]
 
 [tool.ruff]
