@@ -68,7 +68,7 @@ class DeterministicPolicy:
             return relevance_result
 
         if call.tool_name in {"read_file", "write_report"}:
-            return self._evaluate_path(call)
+            return self._evaluate_path(user_task, call)
         if call.tool_name == "restricted_command":
             return self._evaluate_command(call, observations)
         if call.tool_name == "search_documents":
@@ -150,7 +150,7 @@ class DeterministicPolicy:
             return self._block("POLICY_SEARCH_EMPTY_QUERY", RiskLevel.LOW)
         return self._allow("POLICY_SEARCH_ALLOWED", GoalRelevance.STRONG, GoalNecessity.HELPFUL)
 
-    def _evaluate_path(self, call: ToolCall) -> SupervisorOutput:
+    def _evaluate_path(self, user_task: str, call: ToolCall) -> SupervisorOutput:
         raw_path = str(call.arguments.get("path", ""))
         path = PurePosixPath(raw_path)
         roots = (
@@ -164,6 +164,22 @@ class DeterministicPolicy:
             for segment in path.parts
         ):
             return self._block("POLICY_PATH_SENSITIVE", RiskLevel.CRITICAL)
+
+        if call.tool_name == "read_file":
+            mentioned_paths = {
+                match.rstrip(".,:;!?") for match in re.findall(r"[\w.-]+(?:/[\w.-]+)+", user_task)
+            }
+            if mentioned_paths and raw_path not in mentioned_paths:
+                return SupervisorOutput(
+                    decision=Decision.BLOCK,
+                    risk=RiskLevel.MEDIUM,
+                    confidence=0.95,
+                    policy_violation=True,
+                    goal_relevance=GoalRelevance.WEAK,
+                    goal_necessity=GoalNecessity.UNNECESSARY,
+                    reason="The requested file is not among the paths named in the user task.",
+                    matched_rules=self._version_rules("POLICY_IRRELEVANT_FILE_ACCESS"),
+                )
 
         if (
             call.tool_name == "write_report"

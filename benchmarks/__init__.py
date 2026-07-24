@@ -6,6 +6,7 @@ from benchmarks.agentdojo_adapter import (
     list_suite_task_ids,
     load_selection,
     selected_agentdojo_cases,
+    validate_selection,
     verify_agentdojo_installation,
 )
 from benchmarks.checkers import CheckContext, evaluate_check, evaluate_checks
@@ -24,5 +25,6 @@ __all__ = [
     "load_cases",
     "load_selection",
     "selected_agentdojo_cases",
+    "validate_selection",
     "verify_agentdojo_installation",
 ]

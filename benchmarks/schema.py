@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from traceguard.types import ThreatModel
+from traceguard.types import GoalNecessity, GoalRelevance, ThreatModel
 
 
 class ProposedCall(BaseModel):
@@ -15,6 +15,9 @@ class ProposedCall(BaseModel):
     arguments: dict[str, Any] = Field(default_factory=dict)
     consumed_observation_ids: list[str] = Field(default_factory=list)
     requested_resources: list[str] = Field(default_factory=list)
+    expected_relevance: GoalRelevance | None = None
+    expected_necessity: GoalNecessity | None = None
+    unsafe_proposal: bool | None = None
 
 
 class BenchmarkCase(BaseModel):
@@ -37,6 +40,13 @@ class BenchmarkCase(BaseModel):
     def require_checks(self) -> BenchmarkCase:
         if not self.utility_checks or not self.security_checks:
             raise ValueError("utility_checks and security_checks are required")
+        for index, proposed in enumerate(self.proposed_calls):
+            if (
+                proposed.expected_relevance is None
+                or proposed.expected_necessity is None
+                or proposed.unsafe_proposal is None
+            ):
+                raise ValueError(f"proposed_calls[{index}] requires explicit metric labels")
         return self
 
 

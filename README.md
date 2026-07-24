@@ -28,6 +28,9 @@ The smoke run uses the deterministic policy and offline heuristic supervisor. It
 ## Experiments
 
 ```bash
+# four representative threat cases across all eight ablations
+python -m traceguard smoke-matrix --seed 0
+
 # one case + one ablation
 python -m traceguard experiment --split dev --case benign_math_dev --ablation A2
 
@@ -37,11 +40,24 @@ python -m traceguard experiment --split dev --seed 0
 # held-out custom cases
 python -m traceguard experiment --split test --seed 0
 
-# AgentDojo pin + selected suites/tasks
+# frozen custom evaluation across both splits
+python -m traceguard experiment --split all --seed 0
+
+# regenerate summary.json and summary.csv from a completed run's sanitized traces
+python -m traceguard analyze --run-dir artifacts/run_<timestamp>_0
+
+# validate the AgentDojo install, version, suites, and selected task IDs
 python -m traceguard agentdojo-info
 ```
 
-Traces, manifests, CSV/JSON summaries are written under `artifacts/run_*`. Pairing keeps the same per-case seed across ablations.
+Traces, manifests, CSV/JSON summaries, paired comparisons, and representative traces are
+written under `artifacts/run_*`. Pairing keeps the same per-case seed across ablations.
+Manifests record content digests for the cases and initial state. Persisted results redact
+TraceGuard canaries, common secret assignments, and literal patterns configured through
+`TRACEGUARD_REDACT_PATTERNS`.
+
+`agentdojo-info` exits nonzero when AgentDojo is missing, its version differs from `0.1.35`,
+or a configured suite/task ID is unavailable.
 
 ## Repository layout
 

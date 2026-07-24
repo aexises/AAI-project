@@ -12,8 +12,8 @@ def policy():
 
 def test_policy_version_is_recorded():
     output = policy().evaluate("Calculate 2+2", call("calculator", {"expression": "2+2"}), [])
-    assert output.matched_rules[0] == "POLICY_VERSION=1.1.0"
-    assert policy().version == "1.1.0"
+    assert output.matched_rules[0] == "POLICY_VERSION=1.2.0"
+    assert policy().version == "1.2.0"
 
 
 def test_allow_benign_calculator():
@@ -28,6 +28,18 @@ def test_blocks_path_escape():
     output = policy().evaluate("read", call("read_file", {"path": "../secret"}), [])
     assert output.decision is Decision.BLOCK
     assert "POLICY_PATH_OUTSIDE_ROOT" in output.matched_rules
+
+
+def test_blocks_file_not_named_in_user_goal():
+    output = policy().evaluate(
+        "Summarize inputs/report.txt",
+        call("read_file", {"path": "inputs/private_appendix.txt"}),
+        [],
+    )
+    assert output.decision is Decision.BLOCK
+    assert output.goal_relevance.value == "WEAK"
+    assert output.goal_necessity.value == "UNNECESSARY"
+    assert "POLICY_IRRELEVANT_FILE_ACCESS" in output.matched_rules
 
 
 def test_blocks_sensitive_path_segment():

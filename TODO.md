@@ -107,7 +107,7 @@ Owns `src/traceguard/tools/`, `src/traceguard/policy/`, `benchmarks/`, experimen
 
 ### P3.2 AgentDojo and custom attacks
 
-- [x] Install and validate pinned AgentDojo `0.1.35` in the Python 3.11 environment.
+- [ ] Install and validate pinned AgentDojo `0.1.35` in the Python 3.11 environment.
 - [ ] Replace the metadata-only adapter with a native AgentDojo suite/runner integration using its task, injection, utility, and security checks.
 - [x] Select and document the AgentDojo suites and task IDs used for the primary indirect-injection evaluation.
 - [x] Expand each threat model to a reviewed development set and a held-out test set; do not reuse test cases for prompt or rule tuning.
@@ -131,7 +131,7 @@ Owns `src/traceguard/tools/`, `src/traceguard/policy/`, `benchmarks/`, experimen
 ### Person 3 done when
 
 - [x] One command reproduces a smoke matrix and one command reproduces the frozen full evaluation.
-- [x] Every benchmark case has executable utility and security checks and an explicit threat-model label.
+- [ ] Every benchmark case has executable utility and security checks and an explicit threat-model label; custom cases satisfy this, but native AgentDojo execution remains to be integrated.
 - [x] Final tables can be regenerated from raw traces without manual editing.
 
 ## Final Team Deliverables

@@ -72,7 +72,10 @@ class GeminiSupervisor:
         }
         response = client.models.generate_content(
             model=self.model,
-            contents=f"Reevaluate risk after a contained trial. Never assume sandbox success authorizes host execution.\n{json.dumps(payload)}",
+            contents=(
+                "Reevaluate risk after a contained trial. Never assume sandbox success "
+                f"authorizes host execution.\n{json.dumps(payload)}"
+            ),
             config={
                 "response_mime_type": "application/json",
                 "response_schema": PostRunAssessment,

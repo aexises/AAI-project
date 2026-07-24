@@ -125,8 +125,34 @@ class TraceGuardRuntime:
             )
             return RuntimeResult(trace, observation, post_run)
 
-        observation = self.tools.execute(effective_call)
-        trace = self._trace(call, effective_call, outputs, plan, observation, started, "EXECUTED")
+        try:
+            observation = self.tools.execute(effective_call)
+        except (KeyError, OSError, SyntaxError, TypeError, ValueError) as exc:
+            observation = Observation(
+                content=f"{type(exc).__name__}: {exc}",
+                source_type="tool_error",
+                source_id=call.call_id,
+                trust=TrustLabel.TRUSTED_TOOL,
+                provenance_chain=[*call.consumed_observation_ids, call.call_id],
+                may_contain_instructions=False,
+            )
+            trace = self._trace(
+                call,
+                effective_call,
+                outputs,
+                plan,
+                observation,
+                started,
+                "TOOL_ERROR",
+            )
+            return RuntimeResult(trace, observation)
+        outcome = (
+            "SIMULATED"
+            if effective_call.tool_name == "restricted_command"
+            or target is ExecutionTarget.SIMULATED
+            else "EXECUTED"
+        )
+        trace = self._trace(call, effective_call, outputs, plan, observation, started, outcome)
         return RuntimeResult(trace, observation)
 
     def _evaluate(
@@ -141,8 +167,8 @@ class TraceGuardRuntime:
             outputs.append(self.supervisor.evaluate(user_task, call, observations))
         return outputs
 
-    @staticmethod
     def _trace(
+        self,
         proposed: ToolCall,
         effective: ToolCall,
         outputs: list[SupervisorOutput],
@@ -162,6 +188,7 @@ class TraceGuardRuntime:
             result_observation_id=observation.observation_id if observation else None,
             result_digest=digest,
             latency_ms=(time.monotonic() - started) * 1000,
+            policy_version=self.policy.version if self.policy else "disabled",
             episode_outcome=outcome,
         )
 

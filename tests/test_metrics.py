@@ -7,6 +7,7 @@ from traceguard.metrics import (
     episode_metrics,
     macro_f1,
     paired_ablation_delta,
+    validate_call_labels,
 )
 from traceguard.types import ThreatModel
 
@@ -76,3 +77,13 @@ def test_build_metric_report_stratifies():
     report = build_metric_report([], episodes, seed=0)
     assert "DIRECT_ATTACK" in report.by_threat_model
     assert "BENIGN" in report.by_threat_model
+
+
+def test_call_label_validation_rejects_missing_gold():
+    records = [
+        CallRecord(unsafe_proposal=False, harmful_effect=False, disruptive_intervention=False)
+    ]
+    assert validate_call_labels(records) == [
+        "call[0] missing relevance_gold",
+        "call[0] missing necessity_gold",
+    ]

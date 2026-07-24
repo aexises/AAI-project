@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum
+from datetime import UTC, datetime
+from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
@@ -14,33 +14,33 @@ class StrictModel(BaseModel):
     model_config = ConfigDict(extra="forbid", validate_assignment=True)
 
 
-class Decision(str, Enum):
+class Decision(StrEnum):
     ALLOW = "ALLOW"
     BLOCK = "BLOCK"
     ESCALATE = "ESCALATE"
     REWRITE = "REWRITE"
 
 
-class GoalRelevance(str, Enum):
+class GoalRelevance(StrEnum):
     IRRELEVANT = "IRRELEVANT"
     WEAK = "WEAK"
     STRONG = "STRONG"
 
 
-class GoalNecessity(str, Enum):
+class GoalNecessity(StrEnum):
     UNNECESSARY = "UNNECESSARY"
     HELPFUL = "HELPFUL"
     NECESSARY = "NECESSARY"
 
 
-class RiskLevel(str, Enum):
+class RiskLevel(StrEnum):
     LOW = "LOW"
     MEDIUM = "MEDIUM"
     HIGH = "HIGH"
     CRITICAL = "CRITICAL"
 
 
-class TrustLabel(str, Enum):
+class TrustLabel(StrEnum):
     TRUSTED_SYSTEM = "TRUSTED_SYSTEM"
     USER_INPUT = "USER_INPUT"
     TRUSTED_TOOL = "TRUSTED_TOOL"
@@ -49,20 +49,20 @@ class TrustLabel(str, Enum):
     AGENT_GENERATED = "AGENT_GENERATED"
 
 
-class ExecutionTarget(str, Enum):
+class ExecutionTarget(StrEnum):
     DEFAULT = "DEFAULT"
     CONTAINER = "CONTAINER"
     SIMULATED = "SIMULATED"
 
 
-class PostRunDisposition(str, Enum):
+class PostRunDisposition(StrEnum):
     ACCEPT_RESULT = "ACCEPT_RESULT"
     REWRITE_AND_RETRY = "REWRITE_AND_RETRY"
     BLOCK_RESULT = "BLOCK_RESULT"
     ESCALATE = "ESCALATE"
 
 
-class ThreatModel(str, Enum):
+class ThreatModel(StrEnum):
     BENIGN = "BENIGN"
     POLICY_VIOLATION = "POLICY_VIOLATION"
     DIRECT_ATTACK = "DIRECT_ATTACK"
@@ -165,8 +165,9 @@ class TraceEvent(StrictModel):
     result_digest: str | None = None
     latency_ms: float = Field(default=0.0, ge=0.0)
     token_usage: int = Field(default=0, ge=0)
+    policy_version: str
     episode_outcome: str | None = None
-    timestamp: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    timestamp: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
 
 class SafeguardConfig(StrictModel):

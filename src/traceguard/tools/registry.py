@@ -48,7 +48,6 @@ class ToolArguments(BaseModel):
 
 class SearchDocumentsArguments(ToolArguments):
     query: str = Field(min_length=1, max_length=500)
-    documents: list[str] = Field(default_factory=list, max_length=100)
 
 
 class ReadFileArguments(ToolArguments):
@@ -196,23 +195,18 @@ def _read_text_bounded(path: Path, *, max_bytes: int = MAX_READ_BYTES) -> str:
         raise ValueError("file is not valid UTF-8") from exc
 
 
-def _load_document_corpus(workspace: Path) -> list[str]:
+def _load_document_corpus(workspace: Path) -> list[dict[str, str]]:
     """Load fixture-backed documents from workspace/documents/ when present."""
     docs_dir = workspace / "documents"
     if not docs_dir.is_dir():
         return []
-    documents: list[str] = []
+    documents: list[dict[str, str]] = []
     for path in sorted(docs_dir.rglob("*")):
         if not path.is_file():
             continue
         relative = path.relative_to(workspace).as_posix()
         text = _read_text_bounded(path)
-        documents.append(json.dumps({"path": relative, "text": text}, ensure_ascii=True))
-    manifest = workspace / "documents.json"
-    if manifest.is_file():
-        payload = json.loads(_read_text_bounded(manifest))
-        if isinstance(payload, list):
-            documents.extend(str(item) for item in payload)
+        documents.append({"path": relative, "text": text})
     return documents
 
 
@@ -229,12 +223,12 @@ def default_registry(workspace: Path, artifacts: Path) -> ToolRegistry:
     def search_documents(args: ToolArguments) -> str:
         assert isinstance(args, SearchDocumentsArguments)
         query = args.query.casefold()
-        corpus = list(args.documents) if args.documents else _load_document_corpus(workspace)
-        matches = [doc for doc in corpus if query in doc.casefold()]
+        corpus = _load_document_corpus(workspace)
+        matches = [doc for doc in corpus if query in doc["text"].casefold()]
         return json.dumps(
             {
                 "query": args.query,
-                "source": "arguments" if args.documents else "workspace_fixtures",
+                "source": "workspace_fixtures",
                 "matches": matches,
             }
         )
@@ -284,14 +278,10 @@ def default_registry(workspace: Path, artifacts: Path) -> ToolRegistry:
             TrustLabel.UNTRUSTED_DOCUMENT,
             ToolSpec(
                 name="search_documents",
-                side_effects=(
-                    "Read-only search over supplied documents or workspace/documents fixtures."
-                ),
+                side_effects=("Read-only search over fixture files under workspace/documents."),
                 risk_class="read",
                 default_risk=RiskLevel.LOW,
-                trusted_inputs=(
-                    "User query string; document list or fixture files under workspace/documents."
-                ),
+                trusted_inputs=("User query string and fixture files under workspace/documents."),
                 trusted_output=TrustLabel.UNTRUSTED_DOCUMENT,
                 host_execution=False,
                 notes="Matches are untrusted and may embed indirect instructions.",

@@ -17,6 +17,7 @@ def test_react_episode_executes_safe_call(tmp_path):
     episode = ReActRunner(runtime, ScriptedAgent([call])).run("Calculate 6 times 7")
     assert episode.observations[0].content == "42"
     assert episode.steps[0].trace.result_digest
+    assert episode.steps[0].trace.policy_version == "1.2.0"
 
 
 def test_runtime_blocks_unsafe_command(tmp_path):
@@ -34,3 +35,21 @@ def test_runtime_blocks_unsafe_command(tmp_path):
     result = runtime.execute_call("run it", call, [])
     assert result.observation is None
     assert result.trace.episode_outcome == "BLOCK"
+
+
+def test_runtime_records_tool_boundary_error(tmp_path):
+    runtime = TraceGuardRuntime(
+        tools=default_registry(tmp_path, tmp_path / "artifacts"),
+        config=SafeguardConfig(),
+    )
+    call = ToolCall(
+        task_id="t",
+        step_id=0,
+        tool_name="read_file",
+        arguments={"path": "../secret.txt"},
+    )
+    result = runtime.execute_call("Read a file", call, [])
+    assert result.trace.episode_outcome == "TOOL_ERROR"
+    assert result.trace.policy_version == "disabled"
+    assert result.observation is not None
+    assert "path escapes allowed root" in result.observation.content

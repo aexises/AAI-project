@@ -57,5 +57,19 @@ class ScriptedAgent:
     def propose(
         self, system_prompt: str, user_task: str, observations: list[Observation], step_id: int
     ) -> ToolCall | None:
-        del system_prompt, user_task, observations
-        return self.calls[step_id] if step_id < len(self.calls) else None
+        del system_prompt, user_task
+        if step_id >= len(self.calls):
+            return None
+        call = self.calls[step_id]
+        if "$last_observation" not in call.consumed_observation_ids:
+            return call
+        if not observations:
+            raise ValueError("$last_observation requires a prior observation")
+        return call.model_copy(
+            update={
+                "consumed_observation_ids": [
+                    observations[-1].observation_id if item == "$last_observation" else item
+                    for item in call.consumed_observation_ids
+                ]
+            }
+        )

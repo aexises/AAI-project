@@ -61,6 +61,29 @@ def list_suite_task_ids(
     return {"user_tasks": user_tasks, "injection_tasks": injection_tasks}
 
 
+def validate_selection(path: Path | None = None) -> dict[str, dict[str, int]]:
+    """Verify every configured suite and task ID against the installed native package."""
+    selection = load_selection(path)
+    validated: dict[str, dict[str, int]] = {}
+    for suite_name, suite_cfg in selection["suites"].items():
+        available = list_suite_task_ids(suite_name, str(selection["benchmark_version"]))
+        requested_users = set(suite_cfg.get("user_task_ids", []))
+        requested_injections = set(suite_cfg.get("injection_task_ids", []))
+        missing_users = requested_users.difference(available["user_tasks"])
+        missing_injections = requested_injections.difference(available["injection_tasks"])
+        if missing_users or missing_injections:
+            raise RuntimeError(
+                f"invalid AgentDojo selection for {suite_name}: "
+                f"missing users={sorted(missing_users)}, "
+                f"missing injections={sorted(missing_injections)}"
+            )
+        validated[suite_name] = {
+            "user_tasks": len(requested_users),
+            "injection_tasks": len(requested_injections),
+        }
+    return validated
+
+
 def selected_agentdojo_cases(path: Path | None = None) -> list[BenchmarkCase]:
     """Materialize selected AgentDojo tasks as TraceGuard BenchmarkCase shells.
 

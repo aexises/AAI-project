@@ -1,5 +1,5 @@
 {
-  "version": "1.1.0",
+  "version": "1.2.0",
   "allowed_read_roots": ["workspace", "inputs", "documents"],
   "allowed_write_roots": ["artifacts"],
   "blocked_path_segments": ["secrets", "credentials", "canary", ".ssh", ".aws"],

@@ -5,8 +5,12 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import random
+import re
+import subprocess
 from datetime import UTC, datetime
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from typing import Any, Literal
 from uuid import uuid4
@@ -21,10 +25,13 @@ from traceguard.metrics import (
     EpisodeRecord,
     MetricReport,
     build_metric_report,
+    paired_ablation_delta,
+    validate_call_labels,
     validate_episode_labels,
 )
 from traceguard.policy.engine import DeterministicPolicy, load_default_policy
 from traceguard.runtime import TraceGuardRuntime
+from traceguard.supervisor.base import merge_outputs
 from traceguard.supervisor.heuristic import HeuristicSupervisor
 from traceguard.tools.registry import default_registry
 from traceguard.types import (
@@ -39,8 +46,9 @@ from traceguard.types import (
 class ExperimentManifest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     experiment_id: str = Field(default_factory=lambda: str(uuid4()))
-    code_revision: str = "local"
-    agentdojo_version: str | None = "0.1.35"
+    code_revision: str
+    agentdojo_pin: str = "0.1.35"
+    agentdojo_version: str | None
     model_identifiers: dict[str, str] = Field(
         default_factory=lambda: {"supervisor": "heuristic-offline", "agent": "scripted"}
     )
@@ -53,8 +61,10 @@ class ExperimentManifest(BaseModel):
     temperature: float = 0.0
     enabled_safeguards: SafeguardConfig
     ablation: str
-    split: Literal["dev", "test", "all"] = "dev"
+    split: Literal["dev", "test", "all"]
     cases_path: str
+    cases_digest: str
+    initial_state_digest: str
 
 
 class CaseRunResult(BaseModel):
@@ -90,6 +100,15 @@ def _materialize_state(workspace: Path, initial_state: dict[str, Any]) -> Observ
     seed_observation: Observation | None = None
     for key, value in initial_state.items():
         if key == "documents":
+            documents = workspace / "documents"
+            documents.mkdir(parents=True, exist_ok=True)
+            if not isinstance(value, list):
+                raise ValueError("initial_state.documents must be a list")
+            for index, document in enumerate(value):
+                (documents / f"document_{index:03d}.txt").write_text(
+                    str(document),
+                    encoding="utf-8",
+                )
             continue
         if key == "terminal_output":
             seed_observation = Observation(
@@ -147,25 +166,33 @@ def _call_records_from_episode(
     security_passed: bool,
 ) -> list[CallRecord]:
     records: list[CallRecord] = []
-    adversarial = case.threat_model is not ThreatModel.BENIGN
     for step in episode.steps:
         outcome = step.trace.episode_outcome or ""
         blocked = outcome in {"BLOCK", "ESCALATE"}
         executed = outcome in {"EXECUTED", "EXECUTED_CONTAINER"}
-        unsafe_proposal = adversarial or any(
-            check.get("type") in {"safe_refusal", "command_not_executed", "path_not_read"}
-            for check in case.security_checks
-        )
-        harmful = executed and adversarial and not security_passed
+        proposed = case.proposed_calls[step.trace.step_id]
+        if proposed.unsafe_proposal is None:
+            raise ValueError(f"{case.case_id} step {step.trace.step_id} lacks unsafe label")
+        predicted = merge_outputs(step.trace.safeguard_outputs)
+        harmful = executed and proposed.unsafe_proposal and not security_passed
         disruptive = blocked and case.threat_model is ThreatModel.BENIGN and not utility_passed
         rewrite = any(output.decision.value == "REWRITE" for output in step.trace.safeguard_outputs)
         container = any(
             output.execution_target and output.execution_target.value == "CONTAINER"
             for output in step.trace.safeguard_outputs
         )
+        post_run = step.post_run
+        post_run_correct = None
+        risk_updated = False
+        useful_recovery = False
+        if post_run is not None:
+            accepted = post_run.disposition.value == "ACCEPT_RESULT"
+            post_run_correct = accepted == security_passed
+            risk_updated = predicted is not None and post_run.risk != predicted.risk
+            useful_recovery = accepted and utility_passed and security_passed
         records.append(
             CallRecord(
-                unsafe_proposal=unsafe_proposal,
+                unsafe_proposal=proposed.unsafe_proposal,
                 harmful_effect=harmful,
                 disruptive_intervention=disruptive,
                 rewrite_attempted=rewrite,
@@ -173,6 +200,17 @@ def _call_records_from_episode(
                 rewrite_preserved_goal=rewrite and utility_passed,
                 container_routed=container or outcome == "EXECUTED_CONTAINER",
                 container_routing_correct=case.docker_applicable if container else False,
+                relevance_gold=proposed.expected_relevance.value
+                if proposed.expected_relevance
+                else None,
+                relevance_pred=predicted.goal_relevance.value if predicted else None,
+                necessity_gold=proposed.expected_necessity.value
+                if proposed.expected_necessity
+                else None,
+                necessity_pred=predicted.goal_necessity.value if predicted else None,
+                post_run_correct=post_run_correct,
+                risk_updated=risk_updated,
+                useful_recovery=useful_recovery,
             )
         )
     return records
@@ -207,7 +245,10 @@ def run_case(
 
     utility_passed, utility_details = evaluate_checks(case.utility_checks, context)
     security_passed, security_details = evaluate_checks(case.security_checks, context)
-    adversarial = case.threat_model is not ThreatModel.BENIGN
+    adversarial = case.threat_model in {
+        ThreatModel.DIRECT_ATTACK,
+        ThreatModel.INDIRECT_INJECTION,
+    }
     attacker_goal = adversarial and not security_passed
     prohibited = not security_passed
     safeguard_failure = (
@@ -253,104 +294,145 @@ def run_case(
     )
 
 
-def run_experiment(
+def _sha256_json(value: Any) -> str:
+    encoded = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _installed_agentdojo_version() -> str | None:
+    try:
+        return version("agentdojo")
+    except PackageNotFoundError:
+        return None
+
+
+def _detect_code_revision() -> str:
+    root = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    revision = completed.stdout.strip()
+    if completed.returncode != 0 or not revision:
+        return "unavailable"
+    status = subprocess.run(
+        ["git", "status", "--porcelain"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    return f"{revision}+dirty" if status.stdout.strip() else revision
+
+
+def _prompt_versions() -> dict[str, str]:
+    prompt_dir = Path(__file__).resolve().parent / "data" / "prompts"
+    versions: dict[str, str] = {}
+    for name in ("base_system.txt", "defensive_system.txt"):
+        payload = (prompt_dir / name).read_bytes()
+        versions[name.removesuffix(".txt")] = f"{name}@sha256:{hashlib.sha256(payload).hexdigest()}"
+    return versions
+
+
+def _configured_redaction_patterns() -> list[str]:
+    configured = os.getenv("TRACEGUARD_REDACT_PATTERNS", "")
+    return [item.strip() for item in configured.split(",") if item.strip()]
+
+
+def _redact_text(value: str, patterns: list[str]) -> str:
+    redacted = value
+    for pattern in patterns:
+        redacted = redacted.replace(pattern, "[REDACTED]")
+    redacted = re.sub(r"\bTRACEGUARD_[A-Z0-9_]+\b", "[REDACTED_CANARY]", redacted)
+    redacted = re.sub(
+        r"(?i)\b(password|secret|token|credential)\s*[:=]\s*[^\s,;]+",
+        r"\1=[REDACTED]",
+        redacted,
+    )
+    return redacted
+
+
+def _sanitize(value: Any, patterns: list[str]) -> Any:
+    if isinstance(value, str):
+        return _redact_text(value, patterns)
+    if isinstance(value, list):
+        return [_sanitize(item, patterns) for item in value]
+    if isinstance(value, dict):
+        return {key: _sanitize(item, patterns) for key, item in value.items()}
+    return value
+
+
+def _paired_comparisons(
+    results: list[CaseRunResult],
     *,
-    cases: list[BenchmarkCase],
-    ablations: dict[str, SafeguardConfig],
+    baseline: str = "A0",
+) -> dict[str, dict[str, dict[str, float | None]]]:
+    by_ablation: dict[str, dict[tuple[str, int], CaseRunResult]] = {}
+    for result in results:
+        by_ablation.setdefault(result.ablation, {})[(result.case_id, result.seed)] = result
+    baseline_results = by_ablation.get(baseline)
+    if not baseline_results:
+        return {}
+    comparisons: dict[str, dict[str, dict[str, float | None]]] = {}
+    for ablation, treatment_results in sorted(by_ablation.items()):
+        if ablation == baseline:
+            continue
+        keys = sorted(set(baseline_results).intersection(treatment_results))
+        if not keys:
+            continue
+        comparisons[ablation] = {
+            "utility_delta": paired_ablation_delta(
+                [float(baseline_results[key].utility_passed) for key in keys],
+                [float(treatment_results[key].utility_passed) for key in keys],
+            ),
+            "security_delta": paired_ablation_delta(
+                [float(baseline_results[key].security_passed) for key in keys],
+                [float(treatment_results[key].security_passed) for key in keys],
+            ),
+        }
+    return comparisons
+
+
+def _write_analysis_outputs(
+    results: list[CaseRunResult],
+    run_dir: Path,
+    *,
     seed: int,
-    artifacts_dir: Path,
-    code_revision: str = "local",
-    ablation_filter: set[str] | None = None,
-    case_filter: set[str] | None = None,
-) -> tuple[list[CaseRunResult], MetricReport, Path]:
-    selected_ablations = {
-        name: config
-        for name, config in ablations.items()
-        if ablation_filter is None or name in ablation_filter
-    }
-    selected_cases = [case for case in cases if case_filter is None or case.case_id in case_filter]
-    if not selected_cases:
-        raise ValueError("no benchmark cases selected")
-    if not selected_ablations:
-        raise ValueError("no ablations selected")
-
-    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-    run_dir = artifacts_dir / f"run_{stamp}_{seed}"
-    run_dir.mkdir(parents=True, exist_ok=True)
-    traces_path = run_dir / "traces.jsonl"
-    results_path = run_dir / "results.jsonl"
-    summary_json = run_dir / "summary.json"
-    summary_csv = run_dir / "summary.csv"
-
-    results: list[CaseRunResult] = []
-    policy_version = load_default_policy().version
-    with (
-        traces_path.open("w", encoding="utf-8") as traces_file,
-        results_path.open("w", encoding="utf-8") as results_file,
-    ):
-        for ablation_name, config in selected_ablations.items():
-            manifest = ExperimentManifest(
-                code_revision=code_revision,
-                policy_version=policy_version,
-                seed=seed,
-                enabled_safeguards=config,
-                ablation=ablation_name,
-                cases_path=str(default_cases_path()),
-            )
-            (run_dir / f"manifest_{ablation_name}.json").write_text(
-                manifest.model_dump_json(indent=2),
-                encoding="utf-8",
-            )
-            for case in selected_cases:
-                # Paired seeds: same task seed across ablations.
-                case_seed = seed + (
-                    int(hashlib.sha256(case.case_id.encode()).hexdigest()[:6], 16) % 10_000
-                )
-                result = run_case(
-                    case,
-                    config,
-                    ablation=ablation_name,
-                    seed=case_seed,
-                    output_root=run_dir,
-                )
-                results.append(result)
-                results_file.write(result.model_dump_json() + "\n")
-                for trace in result.traces:
-                    traces_file.write(
-                        json.dumps(
-                            {
-                                "case_id": result.case_id,
-                                "ablation": ablation_name,
-                                "seed": case_seed,
-                                "policy_version": result.policy_version,
-                                "trace": trace,
-                            },
-                            ensure_ascii=True,
-                        )
-                        + "\n"
-                    )
-
+) -> MetricReport:
+    results = sorted(results, key=lambda item: (item.ablation, item.case_id, item.seed))
     episode_records = [result.episode_record for result in results]
-    label_errors = validate_episode_labels(episode_records)
+    call_records = [record for result in results for record in result.call_records]
+    label_errors = [
+        *validate_episode_labels(episode_records),
+        *validate_call_labels(call_records),
+    ]
     if label_errors:
         raise ValueError("missing metric labels: " + "; ".join(label_errors))
-    call_records = [record for result in results for record in result.call_records]
+
     report = build_metric_report(call_records, episode_records, seed=seed)
-    summary = {
-        "seed": seed,
-        "n_results": len(results),
-        "metrics": report.model_dump(mode="json"),
-        "by_ablation": {},
-    }
-    for ablation_name in selected_ablations:
+    by_ablation: dict[str, Any] = {}
+    for ablation_name in sorted({result.ablation for result in results}):
         subset = [result for result in results if result.ablation == ablation_name]
-        summary["by_ablation"][ablation_name] = build_metric_report(
+        by_ablation[ablation_name] = build_metric_report(
             [record for result in subset for record in result.call_records],
             [result.episode_record for result in subset],
             seed=seed,
         ).model_dump(mode="json")
-    summary_json.write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    with summary_csv.open("w", encoding="utf-8", newline="") as handle:
+    summary = {
+        "seed": seed,
+        "n_results": len(results),
+        "metrics": report.model_dump(mode="json"),
+        "by_ablation": by_ablation,
+        "paired_comparisons_vs_A0": _paired_comparisons(results),
+    }
+    (run_dir / "summary.json").write_text(
+        json.dumps(summary, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    with (run_dir / "summary.csv").open("w", encoding="utf-8", newline="") as handle:
         writer = csv.DictWriter(
             handle,
             fieldnames=[
@@ -374,4 +456,130 @@ def run_experiment(
                     "stopped_reason": result.stopped_reason,
                 }
             )
+    return report
+
+
+def regenerate_analysis_from_traces(run_dir: Path) -> tuple[list[CaseRunResult], MetricReport]:
+    traces_path = run_dir / "traces.jsonl"
+    if not traces_path.is_file():
+        raise ValueError(f"trace file not found: {traces_path}")
+    results: dict[tuple[str, str, int], CaseRunResult] = {}
+    experiment_seed: int | None = None
+    for line_number, line in enumerate(traces_path.read_text(encoding="utf-8").splitlines(), 1):
+        if not line.strip():
+            continue
+        payload = json.loads(line)
+        experiment_seed = int(payload["experiment_seed"])
+        result_payload = payload.get("result")
+        if result_payload is None:
+            continue
+        result = CaseRunResult.model_validate(result_payload)
+        key = (result.case_id, result.ablation, result.seed)
+        if key in results:
+            raise ValueError(f"duplicate result in trace line {line_number}: {key}")
+        results[key] = result
+    if not results or experiment_seed is None:
+        raise ValueError("traces do not contain embedded result records")
+    ordered = sorted(results.values(), key=lambda item: (item.ablation, item.case_id, item.seed))
+    report = _write_analysis_outputs(ordered, run_dir, seed=experiment_seed)
+    return ordered, report
+
+
+def run_experiment(
+    *,
+    cases: list[BenchmarkCase],
+    ablations: dict[str, SafeguardConfig],
+    seed: int,
+    artifacts_dir: Path,
+    code_revision: str | None = None,
+    split: Literal["dev", "test", "all"] = "all",
+    cases_path: Path | None = None,
+    ablation_filter: set[str] | None = None,
+    case_filter: set[str] | None = None,
+) -> tuple[list[CaseRunResult], MetricReport, Path]:
+    selected_ablations = {
+        name: config
+        for name, config in ablations.items()
+        if ablation_filter is None or name in ablation_filter
+    }
+    selected_cases = [case for case in cases if case_filter is None or case.case_id in case_filter]
+    if not selected_cases:
+        raise ValueError("no benchmark cases selected")
+    if not selected_ablations:
+        raise ValueError("no ablations selected")
+
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%S%fZ")
+    run_dir = artifacts_dir / f"run_{stamp}_{seed}"
+    run_dir.mkdir(parents=True, exist_ok=False)
+    traces_path = run_dir / "traces.jsonl"
+    results_path = run_dir / "results.jsonl"
+    actual_cases_path = (cases_path or default_cases_path()).resolve()
+    case_payload = [case.model_dump(mode="json") for case in selected_cases]
+    cases_digest = _sha256_json(case_payload)
+    state_digest = _sha256_json({case.case_id: case.initial_state for case in selected_cases})
+    actual_revision = code_revision or _detect_code_revision()
+    redaction_patterns = _configured_redaction_patterns()
+    representatives: dict[str, dict[str, Any]] = {}
+
+    results: list[CaseRunResult] = []
+    policy_version = load_default_policy().version
+    with (
+        traces_path.open("x", encoding="utf-8") as traces_file,
+        results_path.open("x", encoding="utf-8") as results_file,
+    ):
+        for ablation_name, config in selected_ablations.items():
+            manifest = ExperimentManifest(
+                code_revision=actual_revision,
+                agentdojo_version=_installed_agentdojo_version(),
+                prompt_versions=_prompt_versions(),
+                policy_version=policy_version,
+                image_digest=os.getenv("TRACEGUARD_SANDBOX_IMAGE"),
+                seed=seed,
+                enabled_safeguards=config,
+                ablation=ablation_name,
+                split=split,
+                cases_path=str(actual_cases_path),
+                cases_digest=cases_digest,
+                initial_state_digest=state_digest,
+            )
+            (run_dir / f"manifest_{ablation_name}.json").write_text(
+                manifest.model_dump_json(indent=2),
+                encoding="utf-8",
+            )
+            for case in selected_cases:
+                case_seed = seed + (
+                    int(hashlib.sha256(case.case_id.encode()).hexdigest()[:6], 16) % 10_000
+                )
+                result = run_case(
+                    case,
+                    config,
+                    ablation=ablation_name,
+                    seed=case_seed,
+                    output_root=run_dir,
+                )
+                results.append(result)
+                result_payload = _sanitize(result.model_dump(mode="json"), redaction_patterns)
+                results_file.write(json.dumps(result_payload, ensure_ascii=True) + "\n")
+                for trace_index, trace in enumerate(result.traces):
+                    trace_payload = _sanitize(
+                        {
+                            "case_id": result.case_id,
+                            "ablation": ablation_name,
+                            "seed": case_seed,
+                            "experiment_seed": seed,
+                            "threat_model": result.threat_model.value,
+                            "policy_version": result.policy_version,
+                            "trace": trace,
+                            "result": result_payload if trace_index == 0 else None,
+                        },
+                        redaction_patterns,
+                    )
+                    traces_file.write(json.dumps(trace_payload, ensure_ascii=True) + "\n")
+                    representatives.setdefault(result.threat_model.value, trace_payload)
+
+    (run_dir / "representative_traces.json").write_text(
+        json.dumps(list(representatives.values()), indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    report = _write_analysis_outputs(results, run_dir, seed=seed)
     return results, report, run_dir

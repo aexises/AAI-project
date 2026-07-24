@@ -111,7 +111,7 @@ def test_search_documents_uses_workspace_fixtures(tmp_path):
     )
     payload = json.loads(observation.content)
     assert payload["source"] == "workspace_fixtures"
-    assert any("Revenue grew 5%." in match for match in payload["matches"])
+    assert payload["matches"] == [{"path": "documents/alpha.txt", "text": "Revenue grew 5%."}]
     assert observation.may_contain_instructions is True
 
 
