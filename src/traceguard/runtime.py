@@ -7,7 +7,7 @@ import time
 from pathlib import Path
 
 from traceguard.policy.engine import DeterministicPolicy
-from traceguard.sandbox.runner import ContainerRunner
+from traceguard.sandbox.runner import ContainerRunner, SandboxUnavailable
 from traceguard.supervisor.base import Supervisor, merge_outputs
 from traceguard.tools.registry import ToolRegistry
 from traceguard.types import (
@@ -108,7 +108,11 @@ class TraceGuardRuntime:
             if self.sandbox is None:
                 trace = self._trace(call, effective_call, outputs, plan, None, started, "ESCALATE")
                 return RuntimeResult(trace, None)
-            evidence = self.sandbox.execute(plan)
+            try:
+                evidence = self.sandbox.execute(plan)
+            except SandboxUnavailable:
+                trace = self._trace(call, effective_call, outputs, plan, None, started, "ESCALATE")
+                return RuntimeResult(trace, None)
             observation = Observation(
                 content=evidence.model_dump_json(),
                 source_type="sandbox",

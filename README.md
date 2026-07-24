@@ -40,6 +40,12 @@ python -m traceguard experiment --split dev --seed 0
 # held-out custom cases
 python -m traceguard experiment --split test --seed 0
 
+# Docker-applicable stratum with approved routes executed in containment
+python -m traceguard experiment --split all --container --seed 0
+
+# exploratory container run with post-run LLM/heuristic evidence reevaluation
+python -m traceguard experiment --split all --container --post-run --seed 0
+
 # frozen custom evaluation across both splits
 python -m traceguard experiment --split all --seed 0
 
@@ -70,9 +76,45 @@ or a configured suite/task ID is unavailable.
 
 ## Security boundary
 
-`restricted_command` never invokes a host shell. Without an approved container plan it returns a simulated runtime marker. Container execution requires `TRACEGUARD_SANDBOX_IMAGE` to contain a pinned `@sha256:` digest and uses argv directly, without shell interpretation. The current prototype supports no-network container profiles; `restricted_network` remains declarative until an enforceable egress proxy is added.
+`restricted_command` never invokes a host shell. Without an approved container plan it returns a simulated runtime marker. Container execution requires the trusted profile configuration to contain a pinned `@sha256:` digest and uses argv directly, without shell interpretation. The current prototype supports no-network container profiles; `restricted_network` remains declarative until an enforceable egress proxy is added.
 
 Post-run reevaluation consumes bounded, untrusted sandbox evidence. It never automatically reruns a command on the host.
+
+## Docker containment
+
+The trusted [`configs/sandbox_profiles.json`](configs/sandbox_profiles.json) pins the
+multi-architecture Python Alpine image by immutable digest and enables three profiles:
+
+- `isolated_compute`: no network, host inputs, or persisted output.
+- `readonly_input`: copies declared workspace inputs into temporary staging and mounts
+  only that copy read-only.
+- `artifact_build`: adds a fixed output mount, then rejects links, special files, excess
+  file counts, and excess byte counts before copying artifacts under `artifacts/sandbox/`.
+
+Limits and profile names come from this strict configuration; values on an execution
+plan cannot add Docker flags or relax the configured limits. Every enabled profile uses
+a non-root user, a read-only root filesystem, all capabilities dropped,
+`no-new-privileges`, no network or IPC namespace sharing, and fixed CPU, memory, PID,
+timeout, and output limits. Container and staging cleanup runs on success, failure, and
+timeout. If Docker, digest/architecture verification, artifact inspection, persistence,
+or cleanup cannot be verified, execution fails closed and the runtime escalates.
+
+On the ARM64 Docker Desktop evaluation host, pull and verify the exact image:
+
+```bash
+docker pull python@sha256:25976e9d34a0fab1f278cae931f34c8303d97bf0c0d7f85b6b4dcf641d7702a4
+python -m traceguard sandbox-check
+TRACEGUARD_RUN_DOCKER_TESTS=1 python -m pytest tests/sandbox -q
+python -m traceguard sandbox-benchmark --runs 10
+```
+
+The benchmark writes code/config digests plus latency, peak-memory, writable-layer, and
+cleanup measurements to `artifacts/sandbox_benchmark.json`. Docker Desktop still runs
+containers inside its Linux VM; kernel/container escapes and compromise of the Docker
+daemon remain outside this application-layer boundary. The Docker socket is never
+mounted, but a daemon compromise would bypass these controls. Restricted network
+execution stays disabled until destination enforcement through an egress proxy is
+implemented.
 
 ## Benchmarking
 

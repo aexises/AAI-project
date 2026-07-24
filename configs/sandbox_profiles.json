@@ -1,6 +1,69 @@
 {
-  "isolated_compute": {"network": "none", "input_mode": "none", "output_mode": "none"},
-  "readonly_input": {"network": "none", "input_mode": "copy_readonly", "output_mode": "none"},
-  "restricted_network": {"network": "allowlist", "input_mode": "copy_readonly", "output_mode": "none"},
-  "artifact_build": {"network": "none", "input_mode": "copy_readonly", "output_mode": "allowlisted"}
+  "version": "sandbox-v1",
+  "image": "python@sha256:25976e9d34a0fab1f278cae931f34c8303d97bf0c0d7f85b6b4dcf641d7702a4",
+  "allowed_architectures": ["arm64"],
+  "container_user": "65532:65532",
+  "profiles": {
+    "isolated_compute": {
+      "enabled": true,
+      "network": "none",
+      "input_mode": "none",
+      "output_mode": "none",
+      "limits": {
+        "timeout_seconds": 20,
+        "memory_mb": 256,
+        "cpu_count": 1.0,
+        "pids": 64,
+        "output_bytes": 65536
+      },
+      "tmpfs_mb": 64
+    },
+    "readonly_input": {
+      "enabled": true,
+      "network": "none",
+      "input_mode": "copy_readonly",
+      "output_mode": "none",
+      "limits": {
+        "timeout_seconds": 20,
+        "memory_mb": 256,
+        "cpu_count": 1.0,
+        "pids": 64,
+        "output_bytes": 65536
+      },
+      "tmpfs_mb": 64
+    },
+    "artifact_build": {
+      "enabled": true,
+      "network": "none",
+      "input_mode": "copy_readonly",
+      "output_mode": "allowlisted",
+      "limits": {
+        "timeout_seconds": 30,
+        "memory_mb": 512,
+        "cpu_count": 1.0,
+        "pids": 64,
+        "output_bytes": 65536
+      },
+      "tmpfs_mb": 64,
+      "artifact_limits": {
+        "max_files": 64,
+        "max_total_bytes": 16777216,
+        "max_file_bytes": 8388608
+      }
+    },
+    "restricted_network": {
+      "enabled": false,
+      "network": "allowlist",
+      "input_mode": "copy_readonly",
+      "output_mode": "none",
+      "limits": {
+        "timeout_seconds": 20,
+        "memory_mb": 256,
+        "cpu_count": 1.0,
+        "pids": 64,
+        "output_bytes": 65536
+      },
+      "tmpfs_mb": 64
+    }
+  }
 }

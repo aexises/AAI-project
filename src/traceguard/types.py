@@ -123,6 +123,7 @@ class ExecutionPlan(StrictModel):
     effective_call: ToolCall
     target: ExecutionTarget
     sandbox_profile: str | None = None
+    declared_input_paths: list[str] = Field(default_factory=list)
     limits: SandboxLimits = Field(default_factory=SandboxLimits)
     validated: bool = False
     validation_reason: str = ""
@@ -138,10 +139,15 @@ class SandboxEvidence(StrictModel):
     exit_code: int | None = None
     stdout: str = ""
     stderr: str = ""
+    stdout_truncated: bool = False
+    stderr_truncated: bool = False
     files_changed: list[str] = Field(default_factory=list)
+    artifact_bytes: int = Field(default=0, ge=0)
+    artifact_directory: str | None = None
     blocked_operations: list[str] = Field(default_factory=list)
     duration_ms: float = Field(default=0.0, ge=0.0)
     peak_memory_bytes: int | None = Field(default=None, ge=0)
+    disk_usage_bytes: int | None = Field(default=None, ge=0)
     timed_out: bool = False
     profile: str
 

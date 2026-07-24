@@ -58,37 +58,37 @@ Owns `src/traceguard/sandbox/`, Docker-related configuration, and `tests/sandbox
 
 ### P2.1 Container profiles
 
-- [ ] Select a minimal ARM64-compatible image and pin its immutable digest in an experiment-specific configuration, not in source code.
-- [ ] Implement and test `isolated_compute` with no network, no host inputs, and ephemeral output.
-- [ ] Implement `readonly_input` by copying declared inputs into a temporary staging area and exposing them read-only.
-- [ ] Implement `artifact_build` with an allowlisted output directory, size limits, and post-run artifact inspection.
-- [ ] Keep `restricted_network` disabled until an enforceable egress proxy or equivalent destination control exists.
-- [ ] Validate that profile names and limits come only from trusted configuration; reject agent-supplied Docker flags.
-- [ ] Add image architecture and digest checks before container startup.
+- [x] Select a minimal ARM64-compatible image and pin its immutable digest in an experiment-specific configuration, not in source code.
+- [x] Implement and test `isolated_compute` with no network, no host inputs, and ephemeral output.
+- [x] Implement `readonly_input` by copying declared inputs into a temporary staging area and exposing them read-only.
+- [x] Implement `artifact_build` with an allowlisted output directory, size limits, and post-run artifact inspection.
+- [x] Keep `restricted_network` disabled until an enforceable egress proxy or equivalent destination control exists.
+- [x] Validate that profile names and limits come only from trusted configuration; reject agent-supplied Docker flags.
+- [x] Add image architecture and digest checks before container startup.
 
 ### P2.2 Hardening and evidence
 
-- [ ] Verify non-root execution, `cap-drop=ALL`, `no-new-privileges`, read-only root filesystem, PID limits, memory limits, CPU limits, and timeout behavior.
-- [ ] Verify that the Docker socket, host credentials, undeclared paths, host PID namespace, privileged mode, and device access are unavailable.
-- [ ] Bound stdout and stderr separately and record when either is truncated.
-- [ ] Collect declared file changes, attempted blocked operations, exit status, duration, timeout, and available resource measurements into `SandboxEvidence`.
-- [ ] Ensure container names, staging directories, and temporary artifacts are cleaned after success, failure, cancellation, and timeout.
-- [ ] Fail closed when Docker is unavailable, the image is unpinned, a profile is unsupported, or evidence collection fails.
+- [x] Verify non-root execution, `cap-drop=ALL`, `no-new-privileges`, read-only root filesystem, PID limits, memory limits, CPU limits, and timeout behavior.
+- [x] Verify that the Docker socket, host credentials, undeclared paths, host PID namespace, privileged mode, and device access are unavailable.
+- [x] Bound stdout and stderr separately and record when either is truncated.
+- [x] Collect declared file changes, attempted blocked operations, exit status, duration, timeout, and available resource measurements into `SandboxEvidence`.
+- [x] Ensure container names, staging directories, and temporary artifacts are cleaned after success, failure, cancellation, and timeout.
+- [x] Fail closed when Docker is unavailable, the image is unpinned, a profile is unsupported, or evidence collection fails.
 
 ### P2.3 Routing and evaluation
 
-- [ ] Define containability rules with Persons 1 and 3: only uncertain or medium-risk command calls may route to Docker.
-- [ ] Add explicit tests showing that high and critical calls remain blocked or escalated even when Docker is available.
-- [ ] Add harmless canary tests for network isolation, undeclared file access, process limits, output limits, and timeout.
-- [ ] Measure cold-start latency, warm latency, peak memory, disk use, and cleanup reliability on the M2 Mac.
+- [x] Define containability rules with Persons 1 and 3: only uncertain or medium-risk command calls may route to Docker.
+- [x] Add explicit tests showing that high and critical calls remain blocked or escalated even when Docker is available.
+- [x] Add harmless canary tests for network isolation, undeclared file access, process limits, output limits, and timeout.
+- [x] Measure cold-start latency, warm latency, peak memory, disk use, and cleanup reliability on the M2 Mac.
 - [ ] Compare simulated execution, container execution, and container execution with LLM reevaluation on the Docker-applicable benchmark stratum.
-- [ ] Document Docker Desktop's Linux VM and container escape/daemon compromise as residual risks.
+- [x] Document Docker Desktop's Linux VM and container escape/daemon compromise as residual risks.
 
 ### Person 2 done when
 
-- [ ] Every enabled profile has passing positive, negative, cleanup, and resource-limit tests on the M2 Mac.
-- [ ] No test exposes the host Docker socket, unrestricted network, or undeclared host paths.
-- [ ] Docker overhead and containment results can be reproduced from a versioned experiment manifest.
+- [x] Every enabled profile has passing positive, negative, cleanup, and resource-limit tests on the M2 Mac.
+- [x] No test exposes the host Docker socket, unrestricted network, or undeclared host paths.
+- [x] Docker overhead and containment results can be reproduced from a versioned experiment manifest.
 
 ## Person 3: Tools, Deterministic Policy, and Benchmarking
 

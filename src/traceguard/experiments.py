@@ -31,6 +31,11 @@ from traceguard.metrics import (
 )
 from traceguard.policy.engine import DeterministicPolicy, load_default_policy
 from traceguard.runtime import TraceGuardRuntime
+from traceguard.sandbox.config import (
+    default_sandbox_configuration_path,
+    load_sandbox_configuration,
+)
+from traceguard.sandbox.runner import ContainerRunner
 from traceguard.supervisor.base import merge_outputs
 from traceguard.supervisor.heuristic import HeuristicSupervisor
 from traceguard.tools.registry import default_registry
@@ -57,6 +62,8 @@ class ExperimentManifest(BaseModel):
     )
     policy_version: str
     image_digest: str | None = None
+    sandbox_config_version: str | None = None
+    container_execution: bool = False
     seed: int = 0
     temperature: float = 0.0
     enabled_safeguards: SafeguardConfig
@@ -130,15 +137,28 @@ def _build_runtime(
     workspace: Path,
     artifacts: Path,
     config: SafeguardConfig,
+    *,
+    container_execution: bool = False,
+    sandbox_config_path: Path | None = None,
 ) -> tuple[TraceGuardRuntime, str]:
     policy_config = load_default_policy()
     policy = DeterministicPolicy(policy_config) if config.deterministic_policy else None
     supervisor = HeuristicSupervisor() if config.llm_supervisor else None
+    sandbox = (
+        ContainerRunner(
+            sandbox_config_path or default_sandbox_configuration_path(),
+            workspace_root=workspace,
+            artifact_root=artifacts,
+        )
+        if container_execution
+        else None
+    )
     runtime = TraceGuardRuntime(
         tools=default_registry(workspace, artifacts),
         config=config,
         policy=policy,
         supervisor=supervisor,
+        sandbox=sandbox,
     )
     return runtime, policy_config.version
 
@@ -223,6 +243,8 @@ def run_case(
     ablation: str,
     seed: int,
     output_root: Path,
+    container_execution: bool = False,
+    sandbox_config_path: Path | None = None,
 ) -> CaseRunResult:
     random.seed(seed)
     workspace = output_root / "workspaces" / ablation / case.case_id / str(seed)
@@ -230,7 +252,13 @@ def run_case(
     workspace.mkdir(parents=True, exist_ok=True)
     artifacts.mkdir(parents=True, exist_ok=True)
     seed_obs = _materialize_state(workspace, case.initial_state)
-    runtime, policy_version = _build_runtime(workspace, artifacts, config)
+    runtime, policy_version = _build_runtime(
+        workspace,
+        artifacts,
+        config,
+        container_execution=container_execution,
+        sandbox_config_path=sandbox_config_path,
+    )
     calls = _to_tool_calls(case, seed)
     runner = ReActRunner(runtime, ScriptedAgent(calls))
     initial = [seed_obs] if seed_obs is not None else None
@@ -496,6 +524,8 @@ def run_experiment(
     cases_path: Path | None = None,
     ablation_filter: set[str] | None = None,
     case_filter: set[str] | None = None,
+    container_execution: bool = False,
+    sandbox_config_path: Path | None = None,
 ) -> tuple[list[CaseRunResult], MetricReport, Path]:
     selected_ablations = {
         name: config
@@ -523,6 +553,9 @@ def run_experiment(
 
     results: list[CaseRunResult] = []
     policy_version = load_default_policy().version
+    sandbox_config = load_sandbox_configuration(
+        sandbox_config_path or default_sandbox_configuration_path()
+    )
     with (
         traces_path.open("x", encoding="utf-8") as traces_file,
         results_path.open("x", encoding="utf-8") as results_file,
@@ -533,7 +566,9 @@ def run_experiment(
                 agentdojo_version=_installed_agentdojo_version(),
                 prompt_versions=_prompt_versions(),
                 policy_version=policy_version,
-                image_digest=os.getenv("TRACEGUARD_SANDBOX_IMAGE"),
+                image_digest=sandbox_config.image,
+                sandbox_config_version=sandbox_config.version,
+                container_execution=container_execution,
                 seed=seed,
                 enabled_safeguards=config,
                 ablation=ablation_name,
@@ -556,6 +591,8 @@ def run_experiment(
                     ablation=ablation_name,
                     seed=case_seed,
                     output_root=run_dir,
+                    container_execution=container_execution,
+                    sandbox_config_path=sandbox_config_path,
                 )
                 results.append(result)
                 result_payload = _sanitize(result.model_dump(mode="json"), redaction_patterns)
