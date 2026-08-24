@@ -96,8 +96,184 @@ export GEMINI_BASE_URL='https://your-compatible-provider.example/v1'
 python -m traceguard demo --gemini --gemini-base-url "$GEMINI_BASE_URL"
 ```
 
-Refer to `README.md` for benchmark commands and `docs/external_benchmarks.md` for dataset
+Refer to [External benchmark guidance](docs/external_benchmarks.md) for dataset
 acquisition, cache verification, and native runner requirements.
+
+## Research runtime operations
+
+The following commands cover the experimental runtime described in the repository README.
+Run them with the project virtual environment active.
+
+### Offline smoke run
+
+```bash
+python -m traceguard smoke
+```
+
+The smoke run uses the deterministic policy and offline heuristic supervisor. It does not
+require credentials, Ollama, AgentDojo, or Docker.
+
+### Demo
+
+```bash
+# Concise live baseline-versus-hybrid comparison
+python -m traceguard demo
+
+# Add a Gemini task-agent and supervisor check
+export GEMINI_API_KEY='your-rotated-key'
+export GEMINI_BASE_URL='https://open.blackroute.space/v1'
+python -m traceguard demo --gemini --gemini-base-url "$GEMINI_BASE_URL"
+```
+
+The command prints each proposed tool call, the supervisor decision, the execution outcome,
+and utility and security checks. Sanitized traces are saved under `artifacts/`. Never put an
+API key in `.env.example`; use an ignored `.env` file or export it in the recording shell.
+
+### Experiments and ablations
+
+```bash
+# Five cases per threat model across all eight ablations
+python -m traceguard smoke-matrix --seed 0
+
+# One case and one ablation
+python -m traceguard experiment --split dev --case benign_math_dev --ablation A2
+
+# Full eight-ablation matrix on the development split
+python -m traceguard experiment --split dev --seed 0
+
+# Held-out custom cases
+python -m traceguard experiment --split test --seed 0
+
+# Docker-applicable stratum with approved routes executed in containment
+python -m traceguard experiment --split all --container --seed 0
+
+# Exploratory container run with post-run evidence reevaluation
+python -m traceguard experiment --split all --container --post-run --seed 0
+
+# Frozen custom evaluation across both splits
+python -m traceguard experiment --split all --seed 0
+
+# Regenerate summaries from a completed run's sanitized traces
+python -m traceguard analyze --run-dir artifacts/run_<timestamp>_0
+
+# Validate AgentDojo installation, version, suites, and selected task IDs
+python -m traceguard agentdojo-info
+
+# Four-mode custom supervisor interface
+python -m traceguard.run_ablation --suite custom --supervisor none --dry-run
+python -m traceguard.run_ablation --suite custom --supervisor deterministic_llm --provider ollama
+
+# AgentDojo smoke ablation with vulnerable-agent attack prompting
+python -m traceguard.run_ablation \
+  --suite agentdojo \
+  --supervisor deterministic_llm \
+  --agent-model qwen3:4b \
+  --supervisor-model qwen3:4b \
+  --agentdojo-suite workspace \
+  --attack tool_knowledge \
+  --dangerously-follow-tool-instructions \
+  --smoke \
+  --force-rerun
+
+# Conclusion matrix across none, deterministic, LLM, and deterministic-LLM modes
+traceguard conclusion-ablation \
+  --agent-model qwen3:4b \
+  --supervisor-model qwen3:4b \
+  --dangerously-follow-tool-instructions \
+  --force-rerun
+```
+
+For a camera-friendly Gemini ablation run that saves terminal output:
+
+```bash
+TS=$(date -u +%Y%m%dT%H%M%SZ)
+OUT=artifacts/conclusion_gemini_smoke_$TS
+mkdir -p "$OUT"
+
+stdbuf -oL -eL conda run -n traceguard-agentdojo env \
+  PYTHONPATH=src:. PYTHONUNBUFFERED=1 \
+  GEMINI_API_KEY="$GEMINI_API_KEY" \
+  GEMINI_BASE_URL="${GEMINI_BASE_URL:-https://open.blackroute.space/v1}" \
+  TRACEGUARD_GEMINI_TRANSPORT=auto \
+  traceguard conclusion-ablation \
+  --agent-provider gemini \
+  --supervisor-provider gemini \
+  --agent-model "${TRACEGUARD_GEMINI_MODEL:-gemini-3.5-flash}" \
+  --supervisor-model "${TRACEGUARD_GEMINI_MODEL:-gemini-3.5-flash}" \
+  --gemini-base-url "${GEMINI_BASE_URL:-https://open.blackroute.space/v1}" \
+  --smoke \
+  --camera-log-steps \
+  --dangerously-follow-tool-instructions \
+  --force-rerun \
+  --output-dir "$OUT" 2>&1 | tee "$OUT/terminal.log"
+```
+
+Traces, manifests, CSV and JSON summaries, paired comparisons, and representative traces are
+written under `artifacts/run_*`. Pairing keeps the same per-case seed across ablations.
+Manifests record content digests for cases and initial state. Persisted results redact
+TraceGuard canaries, common secret assignments, and literal patterns configured through
+`TRACEGUARD_REDACT_PATTERNS`.
+
+`agentdojo-info` exits nonzero when AgentDojo is missing, its version differs from `0.1.35`,
+or a configured suite or task ID is unavailable. Conclusion ablations write `summary.csv`,
+`summary.json`, `conclusion_report.md`, raw AgentDojo logs, and
+`traceguard_supervisor_calls.jsonl` under `artifacts/conclusion_ablation_*`. Provider metadata
+in traces records the resolved Ollama model tag, digest, quantization, resident bytes, and VRAM
+bytes when available.
+
+### Docker containment
+
+The trusted [sandbox profile configuration](configs/sandbox_profiles.json) pins the
+multi-architecture Python Alpine image by immutable digest and enables three profiles:
+
+- `isolated_compute`: no network, host inputs, or persisted output.
+- `readonly_input`: copies declared workspace inputs into temporary staging and mounts only that
+  copy read-only.
+- `artifact_build`: adds a fixed output mount, then rejects links, special files, excess file
+  counts, and excess byte counts before copying artifacts under `artifacts/sandbox/`.
+
+Limits and profile names come from this strict configuration; execution plans cannot add Docker
+flags or relax configured limits. Enabled profiles use a non-root user, a read-only root
+filesystem, dropped capabilities, `no-new-privileges`, no network or IPC namespace sharing, and
+fixed CPU, memory, PID, timeout, and output limits. Cleanup runs after success, failure, and
+timeout. If Docker, image or architecture verification, artifact inspection, persistence, or
+cleanup cannot be verified, execution fails closed.
+
+On an ARM64 or amd64 Docker host, pull and verify the exact multi-architecture image:
+
+```bash
+docker pull python@sha256:25976e9d34a0fab1f278cae931f34c8303d97bf0c0d7f85b6b4dcf641d7702a4
+python -m traceguard sandbox-check
+TRACEGUARD_RUN_DOCKER_TESTS=1 python -m pytest tests/sandbox -q
+python -m traceguard sandbox-benchmark --runs 10
+```
+
+The benchmark writes code and configuration digests plus latency, peak-memory,
+writable-layer, and cleanup measurements to `artifacts/sandbox_benchmark.json`. Docker Desktop
+runs containers in its Linux VM; kernel and container escapes or Docker-daemon compromise remain
+outside this application-layer boundary. The Docker socket is never mounted. Restricted network
+execution stays disabled until destination enforcement through an egress proxy is implemented.
+
+### External benchmarks
+
+AgentDojo is pinned to `0.1.35`. Custom cases in `benchmarks/cases/custom_cases.json` keep
+policy violations, direct attacks, and indirect injections distinct.
+
+External suites use immutable manifests and ignored caches:
+
+```bash
+traceguard dataset list
+traceguard dataset fetch llmail-inject
+traceguard dataset verify llmail-inject
+traceguard benchmark run --dataset llmail-inject --tier smoke
+traceguard benchmark matrix --datasets toolsword r-judge asb-subset --tier smoke
+```
+
+Smoke tiers are harmless offline contract fixtures. Native standard and full runs require a
+verified cache plus an executable JSON-protocol adapter supplied with `--external-runner`.
+AgentDyn is sealed and additionally requires frozen `--prompt-digest` and `--policy-digest`
+values for its full tier. Reports remain separate per dataset and use equal-dataset weighting
+only for the optional macro summary.
 
 ## Control-plane architecture
 
