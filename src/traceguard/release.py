@@ -10,6 +10,8 @@ _DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 _REPOSITORY_COMPONENT_RE = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
 _IMAGE_LINE_RE = re.compile(r"^(?P<indent>\s*)image:\s*(?P<value>[^#\r\n]+?)(?:\s+#.*)?$")
 _PLACEHOLDER_MARKERS = ("replace", "placeholder", "changeme", "todo")
+_RELEASE_DIGEST_PLACEHOLDER = "REPLACE_WITH_RELEASE_DIGEST"
+_UNRESOLVED_TEMPLATE_RE = re.compile(r"REPLACE_WITH_[A-Z0-9_]+|\$\{[^}\r\n]+\}|\{\{[^}\r\n]+\}\}")
 
 
 class ReleaseValidationError(ValueError):
@@ -122,13 +124,98 @@ def validate_manifest(manifest: Path, *, release_image: str | None = None) -> No
     for image in manifest_images(manifest):
         value = (
             replacement
-            if "REPLACE_WITH_RELEASE_DIGEST" in image.value and replacement
+            if _RELEASE_DIGEST_PLACEHOLDER in image.value and replacement
             else image.value
         )
         try:
             validate_image_digest(value, label=f"{image.path}:{image.line} image")
         except ReleaseValidationError as exc:
             raise ReleaseValidationError(str(exc)) from exc
+
+
+def render_release_manifest(
+    *,
+    dockerfile: Path,
+    template: Path,
+    output: Path,
+    base_image: str,
+    release_image: str,
+) -> Path:
+    """Render one digest-pinned Kubernetes manifest without changing its template.
+
+    The output destination must differ from the checked-in template. Rendering is
+    validated before an atomic replacement of the requested output path, so a
+    rejected input never leaves a partial or unsafe manifest behind.
+    """
+
+    try:
+        template_path = template.resolve(strict=True)
+    except OSError as exc:
+        raise ReleaseValidationError(f"cannot resolve manifest template {template}: {exc}") from exc
+    output_path = output.resolve(strict=False)
+    if output_path == template_path:
+        raise ReleaseValidationError("render output must differ from the manifest template")
+    if not output_path.parent.is_dir():
+        raise ReleaseValidationError(
+            f"render output directory does not exist: {output_path.parent}"
+        )
+
+    validate_dockerfile(dockerfile, base_image=base_image)
+    replacement = validate_image_digest(release_image, label="TRACEGUARD_RELEASE_IMAGE")
+    try:
+        contents = template_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ReleaseValidationError(
+            f"cannot read manifest template {template_path}: {exc}"
+        ) from exc
+
+    placeholder_count = contents.count(_RELEASE_DIGEST_PLACEHOLDER)
+    image_placeholder_count = sum(
+        image.value.count(_RELEASE_DIGEST_PLACEHOLDER) for image in manifest_images(template_path)
+    )
+    if placeholder_count != image_placeholder_count:
+        raise ReleaseValidationError(
+            "release digest placeholder must occur only in a Kubernetes image field"
+        )
+    if placeholder_count == 0:
+        raise ReleaseValidationError(
+            f"manifest template contains no {_RELEASE_DIGEST_PLACEHOLDER} placeholder"
+        )
+
+    rendered_lines: list[str] = []
+    for line in contents.splitlines(keepends=True):
+        body = line.rstrip("\r\n")
+        line_ending = line[len(body) :]
+        image_match = _IMAGE_LINE_RE.match(body)
+        if image_match and _RELEASE_DIGEST_PLACEHOLDER in image_match.group("value"):
+            rendered_lines.append(
+                f"{image_match.group('indent')}image: {replacement}"
+                f"{body[image_match.end('value') :]}{line_ending}"
+            )
+        else:
+            rendered_lines.append(line)
+    rendered = "".join(rendered_lines)
+    unresolved = _UNRESOLVED_TEMPLATE_RE.search(rendered)
+    if unresolved:
+        raise ReleaseValidationError(
+            f"rendered manifest contains an unresolved placeholder: {unresolved.group(0)!r}"
+        )
+
+    temporary_output = output_path.with_name(f".{output_path.name}.tmp")
+    try:
+        temporary_output.write_text(rendered, encoding="utf-8")
+        validate_manifest(temporary_output)
+        temporary_output.replace(output_path)
+    except OSError as exc:
+        raise ReleaseValidationError(
+            f"cannot write rendered manifest {output_path}: {exc}"
+        ) from exc
+    finally:
+        try:
+            temporary_output.unlink(missing_ok=True)
+        except OSError:
+            pass
+    return output_path
 
 
 def validate_release_artifacts(

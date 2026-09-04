@@ -29,7 +29,11 @@ from traceguard.experiments import (
     run_experiment,
 )
 from traceguard.policy.engine import DeterministicPolicy, load_default_policy
-from traceguard.release import ReleaseValidationError, validate_release_artifacts
+from traceguard.release import (
+    ReleaseValidationError,
+    render_release_manifest,
+    validate_release_artifacts,
+)
 from traceguard.runtime import TraceGuardRuntime
 from traceguard.sandbox.config import default_sandbox_configuration_path
 from traceguard.sandbox.runner import ContainerRunner, SandboxUnavailable
@@ -563,6 +567,22 @@ def _release_validate(args: argparse.Namespace) -> int:
     return 0
 
 
+def _release_render(args: argparse.Namespace) -> int:
+    try:
+        output = render_release_manifest(
+            dockerfile=args.dockerfile,
+            template=args.template,
+            output=args.output,
+            base_image=args.base_image,
+            release_image=args.release_image,
+        )
+    except ReleaseValidationError as exc:
+        print(f"release rendering failed: {exc}", file=sys.stderr)
+        return 1
+    print(json.dumps({"rendered": str(output), "valid": True}, indent=2))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="traceguard")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -758,6 +778,26 @@ def main(argv: list[str] | None = None) -> int:
         help="immutable digest to substitute only for the checked-in release placeholder",
     )
 
+    release_render = subparsers.add_parser(
+        "release-render",
+        help="render a digest-pinned Kubernetes manifest to an explicit output path",
+    )
+    release_render.add_argument("--dockerfile", type=Path, default=Path("Dockerfile"))
+    release_render.add_argument(
+        "--template",
+        type=Path,
+        default=Path("deploy/kubernetes/control-plane.yaml"),
+        help="checked-in Kubernetes template containing the release digest placeholder",
+    )
+    release_render.add_argument(
+        "--output",
+        type=Path,
+        required=True,
+        help="required destination for the rendered manifest; the template is never modified",
+    )
+    release_render.add_argument("--base-image", required=True)
+    release_render.add_argument("--release-image", required=True)
+
     subparsers.add_parser(
         "ablation",
         help="run a four-mode custom or AgentDojo ablation",
@@ -808,6 +848,8 @@ def main(argv: list[str] | None = None) -> int:
             return 1
     if args.command == "release-validate":
         return _release_validate(args)
+    if args.command == "release-render":
+        return _release_render(args)
     return 2
 
 
