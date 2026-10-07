@@ -22,7 +22,12 @@ _RISK = {"LOW": 0, "MEDIUM": 1, "HIGH": 2, "CRITICAL": 3}
 def merge_outputs(outputs: list[SupervisorOutput]) -> SupervisorOutput | None:
     if not outputs:
         return None
-    winner = max(outputs, key=lambda output: _PRECEDENCE[output.decision.value])
+    winner = max(
+        enumerate(outputs), key=lambda item: (_PRECEDENCE[item[1].decision.value], item[0])
+    )[1]
+    winner = winner.model_copy(
+        update={"risk": max(outputs, key=lambda item: _RISK[item.risk.value]).risk}
+    )
     container_outputs = [
         output for output in outputs if output.execution_target and output.container_profile
     ]

@@ -6,9 +6,15 @@ import hashlib
 import time
 from pathlib import Path
 
+from traceguard.policy.authorization import duplicate_mutation, output
 from traceguard.policy.engine import DeterministicPolicy
 from traceguard.sandbox.runner import ContainerRunner, SandboxUnavailable
 from traceguard.supervisor.base import Supervisor, merge_outputs
+from traceguard.supervisor.contracts import (
+    SupervisorSchemaError,
+    _validate_arguments_against_json_schema,
+    validate_replacement,
+)
 from traceguard.tools.registry import ToolRegistry
 from traceguard.types import (
     Decision,
@@ -19,6 +25,7 @@ from traceguard.types import (
     PostRunDisposition,
     SafeguardConfig,
     SupervisorOutput,
+    TaskAuthority,
     ToolCall,
     TraceEvent,
     TrustLabel,
@@ -45,12 +52,18 @@ class TraceGuardRuntime:
         policy: DeterministicPolicy | None = None,
         supervisor: Supervisor | None = None,
         sandbox: ContainerRunner | None = None,
+        task_authority: TaskAuthority | None = None,
     ) -> None:
         self.tools = tools
         self.config = config
         self.policy = policy
         self.supervisor = supervisor
         self.sandbox = sandbox
+        self.task_authority = task_authority or TaskAuthority()
+        self.executed_calls: dict[str, list[ToolCall]] = {}
+        self.escalated_tasks: set[str] = set()
+        if self.policy is not None:
+            self.policy.task_authority = self.task_authority
         if config.deterministic_policy and policy is None:
             raise ValueError("deterministic policy is enabled but unavailable")
         if config.llm_supervisor and supervisor is None:
@@ -60,6 +73,14 @@ class TraceGuardRuntime:
         self, user_task: str, call: ToolCall, observations: list[Observation]
     ) -> RuntimeResult:
         started = time.monotonic()
+        if call.task_id in self.escalated_tasks:
+            denied = output(
+                Decision.ESCALATE, "episode-escalated", "Episode requires human review."
+            )
+            return RuntimeResult(
+                self._trace(call, call, [denied], None, None, started, "ESCALATE"), None
+            )
+        self._set_supervisor_context(call)
         outputs = self._evaluate(user_task, call, observations)
         merged = merge_outputs(outputs)
         effective_call = (
@@ -73,6 +94,21 @@ class TraceGuardRuntime:
 
         original_rewrite = merged if merged and merged.decision is Decision.REWRITE else None
         if original_rewrite:
+            try:
+                validate_replacement(
+                    call,
+                    effective_call,
+                    goal=user_task,
+                    observations=observations,
+                    authority=self.task_authority,
+                    schemas=self.tools.schemas(),
+                )
+            except SupervisorSchemaError:
+                return RuntimeResult(
+                    self._trace(call, effective_call, outputs, None, None, started, "ESCALATE"),
+                    None,
+                )
+            self._set_supervisor_context(effective_call, rewritten=True)
             reevaluated = self._evaluate(user_task, effective_call, observations)
             outputs.extend(reevaluated)
             second = merge_outputs(reevaluated)
@@ -119,6 +155,7 @@ class TraceGuardRuntime:
             except SandboxUnavailable:
                 trace = self._trace(call, effective_call, outputs, plan, None, started, "ESCALATE")
                 return RuntimeResult(trace, None)
+            self.executed_calls.setdefault(call.task_id, []).append(effective_call)
             observation = Observation(
                 content=evidence.model_dump_json(),
                 source_type="sandbox",
@@ -173,6 +210,7 @@ class TraceGuardRuntime:
                 "TOOL_ERROR",
             )
             return RuntimeResult(trace, observation)
+        self.executed_calls.setdefault(call.task_id, []).append(effective_call)
         outcome = (
             "SIMULATED"
             if effective_call.tool_name == "restricted_command"
@@ -182,10 +220,34 @@ class TraceGuardRuntime:
         trace = self._trace(call, effective_call, outputs, plan, observation, started, outcome)
         return RuntimeResult(trace, observation)
 
+    def _set_supervisor_context(self, call: ToolCall, *, rewritten: bool = False) -> None:
+        if self.policy is not None:
+            self.policy.previous_calls = self.executed_calls.get(call.task_id, [])
+        if self.supervisor is not None and hasattr(self.supervisor, "set_context"):
+            self.supervisor.set_context(
+                previous_calls=self.executed_calls.get(call.task_id, []),
+                task_authority=self.task_authority,
+                trusted_policy=self.policy.config.model_dump(mode="json") if self.policy else None,
+                step_already_rewritten=rewritten,
+            )
+
     def _evaluate(
         self, user_task: str, call: ToolCall, observations: list[Observation]
     ) -> list[SupervisorOutput]:
         outputs: list[SupervisorOutput] = []
+        if self.config.deterministic_policy or self.config.llm_supervisor:
+            repeated = duplicate_mutation(
+                call, self.executed_calls.get(call.task_id, []), self.task_authority
+            )
+            if repeated is not None:
+                return [repeated]
+            try:
+                schemas = self.tools.schemas()
+                if call.tool_name not in schemas:
+                    raise SupervisorSchemaError("tool schema unavailable")
+                _validate_arguments_against_json_schema(call.arguments, schemas[call.tool_name])
+            except SupervisorSchemaError:
+                return [output(Decision.ESCALATE, "invalid-tool-schema", "Tool validation failed.")]
         if self.config.deterministic_policy:
             assert self.policy is not None
             deterministic = self.policy.evaluate(user_task, call, observations)
@@ -207,6 +269,8 @@ class TraceGuardRuntime:
         started: float,
         outcome: str,
     ) -> TraceEvent:
+        if outcome == "ESCALATE":
+            self.escalated_tasks.add(proposed.task_id)
         digest = hashlib.sha256(observation.content.encode()).hexdigest() if observation else None
         token_usage = sum(
             int(output.provider_metadata.get("prompt_eval_count") or 0)

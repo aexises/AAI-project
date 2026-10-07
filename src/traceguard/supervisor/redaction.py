@@ -78,3 +78,57 @@ def redact_value(value: Any, config: RedactionConfig | None = None) -> Any:
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         return [redact_value(item, config) for item in value]
     return value
+
+
+def redact_request(value: Any, config: RedactionConfig | None = None) -> Any:
+    """Use request-local opaque labels so distinct protected values do not collapse.
+
+    No raw-to-label mapping leaves this function. Logs continue to use redact_value.
+    This preserves equality for recognized values, not meaning or arbitrary secrets.
+    """
+    config = mandatory_redaction_config(config)
+    protected: dict[str, str] = {}
+
+    def remember(raw: str) -> None:
+        if raw and raw not in protected:
+            protected[raw] = f"{config.replacement}:{len(protected) + 1}"
+
+    def collect(item: Any) -> None:
+        if isinstance(item, Mapping):
+            for key, child in item.items():
+                if SENSITIVE_KEY_PATTERN.search(str(key)):
+                    remember(child if isinstance(child, str) else json.dumps(child, sort_keys=True))
+                collect(child)
+        elif isinstance(item, str):
+            for pattern in config.patterns:
+                for match in pattern.finditer(item):
+                    remember(match.group())
+        elif isinstance(item, Sequence):
+            for child in item:
+                collect(child)
+
+    collect(value)
+
+    def replace(item: Any) -> Any:
+        if isinstance(item, str):
+            if not protected:
+                return item
+            # One substitution pass avoids touching an already emitted opaque label.
+            pattern = re.compile(
+                "|".join(re.escape(s) for s in sorted(protected, key=len, reverse=True))
+            )
+            return pattern.sub(lambda match: protected[match.group()], item)
+        if isinstance(item, Mapping):
+            return {
+                str(key): (
+                    protected.get(json.dumps(child, sort_keys=True), config.replacement)
+                    if SENSITIVE_KEY_PATTERN.search(str(key)) and not isinstance(child, str)
+                    else replace(child)
+                )
+                for key, child in item.items()
+            }
+        if isinstance(item, Sequence) and not isinstance(item, (bytes, bytearray)):
+            return [replace(child) for child in item]
+        return item
+
+    return replace(value)

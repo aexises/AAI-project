@@ -28,6 +28,7 @@ from traceguard.types import (
     PostRunDisposition,
     RiskLevel,
     SandboxEvidence,
+    TaskAuthority,
     ToolCall,
     TrustLabel,
 )
@@ -489,13 +490,12 @@ def test_gemini_provider_records_token_usage():
     assert result.metadata.eval_count == 5
 
 
-def test_gemini_provider_ignores_gateway_schema_extra_key():
+def test_gemini_provider_rejects_gateway_schema_extra_key():
     raw = response_json(additionalProperties=False)
     provider = GeminiSupervisor(transport=FakeGeminiTransport(raw))
 
-    result = provider.evaluate(request())
-
-    assert result.decision is Decision.ALLOW
+    with pytest.raises(SupervisorSchemaError):
+        provider.evaluate(request())
 
 
 def test_gemini_provider_redacts_prompt_payload():
@@ -655,19 +655,24 @@ def test_providers_accept_same_frozen_golden_contract_set(provider_name):
         }
         if rewritten:
             available_tools[rewritten["tool_name"]] = {"type": "object"}
-        result = provider.evaluate(
-            SupervisorRequest(
-                user_goal=case["user_goal"],
-                proposed_call=ToolCall(
-                    task_id=case["case_id"],
-                    step_id=index,
-                    **case["proposed_call"],
-                ),
-                available_tools=available_tools,
+        req = SupervisorRequest(
+            user_goal=case["user_goal"],
+            proposed_call=ToolCall(task_id=case["case_id"], step_id=index, **case["proposed_call"]),
+            available_tools=available_tools,
+            task_authority=TaskAuthority(
+                argument_values={"send_email": {"recipients": ["alice@example.com"]}}
             )
+            if case["case_id"] == "rewrite_fewer_recipients"
+            else TaskAuthority(),
         )
-
-        assert result.decision.value == case["expected_decision"]
+        if case["case_id"] == "rewrite_container_route":
+            # Historical v1 fixture puts runtime routing inside tool arguments.
+            # v2 rejects it instead of manufacturing execution authority.
+            with pytest.raises(SupervisorSchemaError):
+                provider.evaluate(req)
+        else:
+            result = provider.evaluate(req)
+            assert result.decision.value == case["expected_decision"]
 
 
 @pytest.mark.parametrize("provider_name", ["ollama", "gemini"])

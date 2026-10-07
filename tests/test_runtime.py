@@ -50,7 +50,7 @@ def test_react_episode_executes_safe_call(tmp_path):
     episode = ReActRunner(runtime, ScriptedAgent([call])).run("Calculate 6 times 7")
     assert episode.observations[0].content == "42"
     assert episode.steps[0].trace.result_digest
-    assert episode.steps[0].trace.policy_version == "1.2.0"
+    assert episode.steps[0].trace.policy_version == "2.0.0"
 
 
 def test_runtime_blocks_unsafe_command(tmp_path):

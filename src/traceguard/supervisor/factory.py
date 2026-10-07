@@ -93,6 +93,8 @@ def build_supervisor_bundle(
         if mode in {"llm", "deterministic_llm"}
         else None
     )
+    if supervisor is not None and hasattr(supervisor, "trusted_policy"):
+        supervisor.trusted_policy = policy_config.model_dump(mode="json")
     effective_config = config.model_copy(
         update={
             "supervisor_mode": mode,

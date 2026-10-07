@@ -3,8 +3,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from traceguard.policy.authorization import duplicate_mutation, output
 from traceguard.supervisor.agentdojo_pipeline import AgentDojoDeterministicSupervisor
 from traceguard.supervisor.base import Supervisor
+from traceguard.supervisor.contracts import (
+    SupervisorSchemaError,
+    _validate_arguments_against_json_schema,
+    validate_replacement,
+)
 from traceguard.types import (
     Decision,
     GoalNecessity,
@@ -12,6 +18,7 @@ from traceguard.types import (
     Observation,
     RiskLevel,
     SupervisorOutput,
+    TaskAuthority,
     ToolCall,
     TrustLabel,
 )
@@ -26,11 +33,15 @@ class SupervisionGateway:
         mode: str,
         supervisor: Supervisor | None = None,
         available_tools: Mapping[str, dict[str, Any]] | None = None,
+        task_authority: TaskAuthority | None = None,
     ) -> None:
         if mode not in {"none", "deterministic", "llm", "deterministic_llm"}:
             raise ValueError(f"unknown supervisor mode: {mode}")
         self.mode = mode
-        if supervisor is None and mode in {"deterministic", "deterministic_llm"}:
+        self.task_authority = task_authority or TaskAuthority()
+        self.history: list[ToolCall] = []
+        self.escalated = False
+        if supervisor is None and mode == "deterministic":
             supervisor = AgentDojoDeterministicSupervisor()
         if supervisor is None and mode in {"llm", "deterministic_llm"}:
             raise ValueError("LLM modes require an explicit supervisor")
@@ -66,19 +77,88 @@ class SupervisionGateway:
                 goal_necessity=GoalNecessity.HELPFUL,
                 reason="Supervision is disabled for this ablation.",
             )
+        if hasattr(self.supervisor, "last_evaluation_log"):
+            self.supervisor.last_evaluation_log = None
+        if self.escalated:
+            return call, output(
+                Decision.ESCALATE, "episode-escalated", "Episode requires human review."
+            )
+        repeated = duplicate_mutation(call, self.history, self.task_authority)
+        if repeated is not None:
+            return call, repeated
         if hasattr(self.supervisor, "available_tools"):
             self.supervisor.available_tools = self.available_tools
-        output = self.supervisor.evaluate(user_goal, call, observations)
-        return call, output
+        if hasattr(self.supervisor, "set_context"):
+            self.supervisor.set_context(
+                previous_calls=self.history, task_authority=self.task_authority
+            )
+        try:
+            if call.tool_name not in self.available_tools:
+                raise SupervisorSchemaError("tool schema unavailable")
+            _validate_arguments_against_json_schema(
+                call.arguments, self.available_tools[call.tool_name]
+            )
+        except SupervisorSchemaError:
+            self.escalated = True
+            return call, output(Decision.ESCALATE, "invalid-tool-schema", "Tool validation failed.")
+        if self.mode == "deterministic_llm":
+            gate = AgentDojoDeterministicSupervisor()
+            gate.set_context(previous_calls=self.history, task_authority=self.task_authority)
+            checked = gate.evaluate(user_goal, call, observations)
+            if checked.decision in {Decision.BLOCK, Decision.ESCALATE}:
+                self.escalated = checked.decision is Decision.ESCALATE
+                return call, checked
+        decision = self.supervisor.evaluate(user_goal, call, observations)
+        if decision.decision is Decision.REWRITE and decision.rewritten_call is not None:
+            replacement = decision.rewritten_call
+            try:
+                validate_replacement(
+                    call,
+                    replacement,
+                    goal=user_goal,
+                    observations=observations,
+                    authority=self.task_authority,
+                    schemas=self.available_tools,
+                )
+            except SupervisorSchemaError:
+                self.escalated = True
+                return call, output(
+                    Decision.ESCALATE, "invalid-rewrite", "Rewrite validation failed."
+                )
+            if hasattr(self.supervisor, "set_context"):
+                self.supervisor.set_context(
+                    previous_calls=self.history,
+                    task_authority=self.task_authority,
+                    step_already_rewritten=True,
+                )
+            checked = duplicate_mutation(replacement, self.history, self.task_authority)
+            if checked is None and self.mode == "deterministic_llm":
+                gate = AgentDojoDeterministicSupervisor()
+                gate.set_context(previous_calls=self.history, task_authority=self.task_authority)
+                checked = gate.evaluate(user_goal, replacement, observations)
+                if checked.decision is Decision.ALLOW:
+                    checked = None
+            checked = checked or self.supervisor.evaluate(user_goal, replacement, observations)
+            if checked.decision is Decision.ALLOW:
+                call = replacement
+                decision = checked
+            else:
+                decision = checked.model_copy(
+                    update={"decision": Decision.ESCALATE, "rewritten_call": None}
+                )
+        if decision.decision is Decision.ESCALATE:
+            self.escalated = True
+        return call, decision
 
-    @staticmethod
     def observation(
+        self,
         call: ToolCall,
         content: str,
         *,
         source_type: str,
         trust: TrustLabel = TrustLabel.UNTRUSTED_TOOL,
     ) -> Observation:
+        self.history.append(call)
         return Observation(
             content=content,
             source_type=source_type,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
 from benchmarks.datasets.gateway import SupervisionGateway
 from traceguard.types import Decision, Observation, TrustLabel
@@ -110,6 +111,7 @@ def _inspect_history_observations(history: list[Any]) -> list[Observation]:
                 content=str(content),
                 source_type="inspect_tool",
                 source_id=f"inspect-history-{index}",
+                observation_id=str(uuid5(NAMESPACE_URL, f"inspect-history-{index}")),
                 trust=TrustLabel.UNTRUSTED_TOOL,
                 may_contain_instructions=True,
             )

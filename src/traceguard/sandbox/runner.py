@@ -15,6 +15,7 @@ from collections.abc import Callable
 from pathlib import Path
 from uuid import uuid4
 
+from traceguard.policy.authorization import sensitive_path
 from traceguard.sandbox.config import (
     ENABLED_PROFILES,
     SandboxProfile,
@@ -277,6 +278,8 @@ class ContainerRunner:
             relative = Path(raw_path)
             if relative.is_absolute() or ".." in relative.parts or relative == Path("."):
                 raise SandboxUnavailable(f"declared input is outside the workspace: {raw_path}")
+            if sensitive_path(raw_path):
+                raise SandboxUnavailable("protected declared input is not allowed")
             untrusted_source = self.workspace_root / relative
             component = self.workspace_root
             for part in relative.parts:
@@ -286,6 +289,11 @@ class ContainerRunner:
                         f"symbolic-link input is not allowed: {component.name}"
                     )
             self._reject_symlinks(untrusted_source)
+            if untrusted_source.is_dir() and any(
+                sensitive_path(child.relative_to(self.workspace_root).as_posix())
+                for child in untrusted_source.rglob("*")
+            ):
+                raise SandboxUnavailable("declared directory contains protected objects")
             source = untrusted_source.resolve()
             if source != self.workspace_root and self.workspace_root not in source.parents:
                 raise SandboxUnavailable(f"declared input escapes the workspace: {raw_path}")

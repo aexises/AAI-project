@@ -200,10 +200,11 @@ def test_diagnostics_are_not_pooled_with_attack_prevention_metrics():
     assert "toolsword" not in report["datasets"]
     assert report["diagnostics"]["toolsword"] == {
         "cases": 2,
-        "accuracy": 1.0,
-        "macro_f1": 1.0,
-        "false_positive_rate": 0.0,
-        "risk_description_quality": 1.0,
+        "measured_cases": 0,
+        "accuracy": None,
+        "macro_f1": None,
+        "false_positive_rate": None,
+        "risk_description_quality": None,
     }
 
 

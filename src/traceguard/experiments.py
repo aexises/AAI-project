@@ -511,7 +511,10 @@ def _prompt_versions() -> dict[str, str]:
     prompt_paths = {
         "base": package_dir / "data" / "prompts" / "base_system.txt",
         "defensive": package_dir / "data" / "prompts" / "defensive_system.txt",
-        "supervisor": package_dir / "prompts" / "supervisor_v1.txt",
+        "supervisor": package_dir / "prompts" / "supervisor_v2.txt",
+        "post_run": package_dir / "prompts" / "post_run_v1.txt",
+        "tool_effects": package_dir / "data" / "policy" / "effects.json",
+        "policy": package_dir / "data" / "policy" / "default.json",
     }
     for name, path in prompt_paths.items():
         payload = path.read_bytes()

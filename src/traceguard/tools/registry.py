@@ -16,6 +16,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from traceguard.policy.authorization import sensitive_path
 from traceguard.types import Observation, RiskLevel, ToolCall, TrustLabel
 
 MAX_READ_BYTES = 262_144  # 256 KiB
@@ -209,13 +210,22 @@ def _read_text_bounded(path: Path, *, max_bytes: int = MAX_READ_BYTES) -> str:
 def _load_document_corpus(workspace: Path) -> list[dict[str, str]]:
     """Load fixture-backed documents from workspace/documents/ when present."""
     docs_dir = workspace / "documents"
+    if docs_dir.is_symlink():
+        raise ValueError("symbolic-link document corpus is not allowed")
     if not docs_dir.is_dir():
         return []
     documents: list[dict[str, str]] = []
     for path in sorted(docs_dir.rglob("*")):
+        if path.is_symlink():
+            raise ValueError("symbolic links are not allowed in the document corpus")
         if not path.is_file():
             continue
+        resolved = path.resolve()
+        if docs_dir.resolve() not in resolved.parents:
+            raise ValueError("document path escapes corpus root")
         relative = path.relative_to(workspace).as_posix()
+        if sensitive_path(relative):
+            raise ValueError("protected object in document corpus")
         text = _read_text_bounded(path)
         documents.append({"path": relative, "text": text})
     return documents

@@ -1,5 +1,8 @@
 # TraceGuard Evaluation Report
 
+This is a historical July result. The October policy and prompt revisions require new
+runs; see [the hardening and local pilot report](hardening_and_pilot_20261006.md).
+
 ## Scope
 
 This report records the reproducible validation run performed on 25 July 2026.

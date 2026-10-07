@@ -192,6 +192,17 @@ def _system_prompt(functions: Mapping[str, Any], system_message: str | None = No
     return f"{system_message.rstrip()}\n\nAvailable tools:\n{tool_list}"
 
 
+def resolved_agent_template(
+    *, system_prompt=None, system_message=None, research_mode=False, dangerous=False
+):
+    template = system_prompt or system_message
+    if template is None and research_mode:
+        template = SYSTEM_TEMPLATE.split("- If the user asks for information")[0]
+    if dangerous:
+        template = _append_dangerous_tool_instruction_prompt(template)
+    return template or SYSTEM_TEMPLATE
+
+
 def _append_dangerous_tool_instruction_prompt(system_prompt: str | None) -> str:
     base_prompt = system_prompt or SYSTEM_TEMPLATE
     return f"{base_prompt.rstrip()}\n\n{DANGEROUS_TOOL_INSTRUCTION_PROMPT.strip()}"
@@ -1814,6 +1825,7 @@ def build_react_llm(
     gemini_base_url: str | None,
     camera_log_steps: bool = False,
     seed: int = 0,
+    research_mode: bool = False,
 ):
     from agentdojo.agent_pipeline.base_pipeline_element import BasePipelineElement
     from agentdojo.functions_runtime import FunctionCall
@@ -1877,7 +1889,9 @@ def build_react_llm(
                 blocked_error = None
                 if parsed[0] != "action":
                     if parsed[0] == "final":
-                        if final_error := _final_answer_error(raw, messages):
+                        if final_error := (
+                            None if research_mode else _final_answer_error(raw, messages)
+                        ):
                             blocked_error = final_error
                             if attempt >= max_attempts - 1:
                                 break
@@ -1928,7 +1942,9 @@ def build_react_llm(
                         ]
                     )
                     continue
-                parsed_args = _normalize_tool_args(parsed[1], parsed_args)
+                parsed_args = (
+                    parsed_args if research_mode else _normalize_tool_args(parsed[1], parsed_args)
+                )
 
                 if parsed[1] not in runtime.functions:
                     blocked_error = (
@@ -1950,7 +1966,11 @@ def build_react_llm(
                     )
                     continue
 
-                if date_error := _calendar_year_error(parsed[1], parsed_args, messages):
+                if date_error := (
+                    None
+                    if research_mode
+                    else _calendar_year_error(parsed[1], parsed_args, messages)
+                ):
                     blocked_error = date_error
                     if attempt >= max_attempts - 1:
                         break
@@ -1967,7 +1987,7 @@ def build_react_llm(
 
                 action_error = (
                     _blocked_action_error(parsed[1], parsed_args, messages)
-                    if agent_action_guards
+                    if agent_action_guards and not research_mode
                     else None
                 )
                 if action_error:
@@ -2014,7 +2034,11 @@ def build_react_llm(
 
             if parsed[0] == "final":
                 if blocked_error is not None:
-                    fallback = _fallback_for_blocked_final(blocked_error, messages)
+                    fallback = (
+                        None
+                        if research_mode
+                        else _fallback_for_blocked_final(blocked_error, messages)
+                    )
                     if fallback is not None:
                         fallback_kind, fallback_name, fallback_payload = fallback
                         if fallback_kind == "final" and isinstance(fallback_payload, str):
@@ -2051,7 +2075,11 @@ def build_react_llm(
             if parsed[0] == "action":
                 _, action, action_input = parsed
                 if blocked_error is not None:
-                    fallback = _fallback_for_blocked_final(blocked_error, messages)
+                    fallback = (
+                        None
+                        if research_mode
+                        else _fallback_for_blocked_final(blocked_error, messages)
+                    )
                     if fallback is not None:
                         fallback_kind, fallback_name, fallback_payload = fallback
                         if fallback_kind == "final" and isinstance(fallback_payload, str):
@@ -2095,7 +2123,9 @@ def build_react_llm(
                 try:
                     args = _json_object_from_action_input(action_input)
                 except Exception as exc:
-                    if fallback := _fallback_for_parse_error(raw, messages):
+                    if fallback := (
+                        None if research_mode else _fallback_for_parse_error(raw, messages)
+                    ):
                         fallback_kind, fallback_name, fallback_payload = fallback
                         if fallback_kind == "final" and isinstance(fallback_payload, str):
                             output = ChatAssistantMessage(
@@ -2132,7 +2162,7 @@ def build_react_llm(
                         tool_calls=[],
                     )
                     return query, runtime, env, [*messages, output], extra_args
-                args = _normalize_tool_args(action, args)
+                args = args if research_mode else _normalize_tool_args(action, args)
 
                 output = ChatAssistantMessage(
                     role="assistant",
@@ -2154,7 +2184,7 @@ def build_react_llm(
                 ],
                 tool_calls=[],
             )
-            if fallback := _fallback_for_parse_error(raw, messages):
+            if fallback := (None if research_mode else _fallback_for_parse_error(raw, messages)):
                 fallback_kind, fallback_name, fallback_payload = fallback
                 if fallback_kind == "final" and isinstance(fallback_payload, str):
                     output = ChatAssistantMessage(
@@ -2392,9 +2422,12 @@ def run_benchmark(args: argparse.Namespace) -> AgentDojoRunSummary:
     from agentdojo.task_suite.load_suites import get_suite
 
     args.logdir.mkdir(parents=True, exist_ok=True)
-    system_prompt = args.system_prompt or args.system_message
-    if args.dangerously_follow_tool_instructions:
-        system_prompt = _append_dangerous_tool_instruction_prompt(system_prompt)
+    system_prompt = resolved_agent_template(
+        system_prompt=args.system_prompt,
+        system_message=args.system_message,
+        research_mode=getattr(args, "research_mode", False),
+        dangerous=args.dangerously_follow_tool_instructions,
+    )
     agent_action_guards = not (
         args.disable_agent_action_guards or args.dangerously_follow_tool_instructions
     )
@@ -2406,6 +2439,7 @@ def run_benchmark(args: argparse.Namespace) -> AgentDojoRunSummary:
         repeat_retries=args.repeat_retries,
         system_message=system_prompt,
         agent_action_guards=agent_action_guards,
+        research_mode=getattr(args, "research_mode", False),
         ollama_url=args.ollama_url,
         gemini_api_key=args.gemini_api_key,
         gemini_base_url=args.gemini_base_url,
@@ -2451,6 +2485,15 @@ def run_benchmark(args: argparse.Namespace) -> AgentDojoRunSummary:
     with OutputLogger(str(args.logdir)):
         for suite_name in args.suite or ["workspace"]:
             suite = get_suite(args.benchmark_version, suite_name)
+            functions = {tool.name: tool for tool in suite.tools}
+            resolved = _system_prompt(functions, system_prompt)
+            prompt_path = args.logdir / f"resolved_system_prompt_{suite_name}.txt"
+            prompt_path.write_text(resolved, encoding="utf-8")
+            import hashlib
+
+            (args.logdir / f"resolved_system_prompt_{suite_name}.sha256").write_text(
+                hashlib.sha256(resolved.encode()).hexdigest() + "\n", encoding="utf-8"
+            )
             user_tasks = args.user_task or None
             injection_tasks = args.injection_task or None
             if attack_name is None:
@@ -2512,6 +2555,11 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-steps", type=int, default=10)
     parser.add_argument("--max-tokens", type=int, default=512)
+    parser.add_argument(
+        "--research-mode",
+        action="store_true",
+        help="Disable task-specific corrections, normalization and fallbacks.",
+    )
     parser.add_argument("--format-retries", type=int, default=2)
     parser.add_argument("--repeat-retries", type=int, default=3)
     parser.add_argument("--system-prompt", default=None)

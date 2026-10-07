@@ -1,0 +1,200 @@
+{
+  "version": "effects-v1",
+  "read": [
+    "calculator",
+    "search_documents",
+    "read_file",
+    "list_files",
+    "grep",
+    "email_search",
+    "email_list",
+    "email_read",
+    "observation_read",
+    "get_weather",
+    "search_products",
+    "get_current_day",
+    "get_current_time",
+    "get_day_calendar_events",
+    "search_calendar_events",
+    "get_calendar_event",
+    "get_received_emails",
+    "get_sent_emails",
+    "get_unread_emails",
+    "get_draft_emails",
+    "search_emails",
+    "get_email",
+    "search_files",
+    "get_file",
+    "get_file_content",
+    "list_files_in_drive",
+    "get_balance",
+    "get_iban",
+    "get_most_recent_transactions",
+    "get_scheduled_transactions",
+    "get_credit_card_details",
+    "get_user_info",
+    "get_channels",
+    "read_channel_messages",
+    "read_inbox",
+    "get_channels_of_user",
+    "get_users_in_channel",
+    "search_all_messages",
+    "search_channel_messages",
+    "search_files_by_filename",
+    "search_contacts_by_name",
+    "search_contacts_by_email",
+    "get_file_by_id",
+    "get_webpage",
+    "get_user_information",
+    "get_all_hotels_in_city",
+    "get_hotels_prices",
+    "get_rating_reviews_for_hotels",
+    "get_hotels_address",
+    "get_all_restaurants_in_city",
+    "get_cuisine_type_for_restaurants",
+    "get_restaurants_address",
+    "get_rating_reviews_for_restaurants",
+    "get_dietary_restrictions_for_all_restaurants",
+    "get_contact_information_for_restaurants",
+    "get_price_for_restaurants",
+    "check_restaurant_opening_hours",
+    "get_all_car_rental_companies_in_city",
+    "get_car_types_available",
+    "get_rating_reviews_for_car_rental",
+    "get_car_fuel_options",
+    "get_car_rental_address",
+    "get_car_price_per_day",
+    "get_flight_information"
+  ],
+  "mutations": {
+    "send_email": [
+      "send",
+      "forward",
+      "reply"
+    ],
+    "delete_email": [
+      "delete",
+      "remove"
+    ],
+    "delete_file": [
+      "delete",
+      "remove"
+    ],
+    "share_file": [
+      "share"
+    ],
+    "append_to_file": [
+      "append",
+      "write"
+    ],
+    "create_file": [
+      "create",
+      "write",
+      "save"
+    ],
+    "write_report": [
+      "write",
+      "create",
+      "save"
+    ],
+    "create_calendar_event": [
+      "create",
+      "schedule",
+      "book"
+    ],
+    "cancel_calendar_event": [
+      "cancel"
+    ],
+    "reschedule_calendar_event": [
+      "reschedule",
+      "move"
+    ],
+    "add_calendar_event_participants": [
+      "add",
+      "invite"
+    ],
+    "send_money": [
+      "pay",
+      "send",
+      "transfer"
+    ],
+    "schedule_transaction": [
+      "pay",
+      "schedule",
+      "transfer"
+    ],
+    "update_scheduled_transaction": [
+      "update",
+      "change"
+    ],
+    "delete_scheduled_transaction": [
+      "delete",
+      "cancel"
+    ],
+    "send_direct_message": [
+      "send",
+      "message"
+    ],
+    "send_channel_message": [
+      "send",
+      "post",
+      "message"
+    ],
+    "add_user_to_channel": [
+      "add",
+      "invite"
+    ],
+    "merge_pull_request": [
+      "merge"
+    ],
+    "harmful_action_simulator": [],
+    "restricted_command": [
+      "run",
+      "execute"
+    ],
+    "python": [
+      "run",
+      "execute"
+    ],
+    "bash_session": [
+      "run",
+      "execute"
+    ],
+    "update_password": [
+      "update",
+      "change"
+    ],
+    "update_user_info": [
+      "update",
+      "change"
+    ],
+    "invite_user_to_slack": [
+      "invite",
+      "add"
+    ],
+    "remove_user_from_slack": [
+      "remove",
+      "delete"
+    ],
+    "post_webpage": [
+      "post",
+      "publish"
+    ],
+    "reserve_hotel": [
+      "reserve",
+      "book"
+    ],
+    "reserve_car_rental": [
+      "reserve",
+      "book"
+    ],
+    "reserve_restaurant": [
+      "reserve",
+      "book"
+    ]
+  },
+  "argument_dependent": [
+    "memory",
+    "text_editor"
+  ]
+}

@@ -15,8 +15,8 @@ from traceguard.types import (
 )
 
 
-def test_types_v2_contract_and_shared_fixtures_are_versioned():
-    assert CONTRACT_VERSION == "types-v2"
+def test_types_v3_contract_and_shared_fixtures_are_versioned():
+    assert CONTRACT_VERSION == "types-v3"
     fixtures = json.loads(Path("tests/fixtures/contracts.json").read_text(encoding="utf-8"))
     assert {fixture["fixture"] for fixture in fixtures} == {
         "benign_call",

@@ -21,7 +21,10 @@ The reviewed golden set additionally covers all four threat-model labels,
 all four supervisor decisions, independently labelled relevance and
 necessity, necessary-but-risky behavior, relevant-but-unnecessary behavior,
 and a low-risk but unrelated lookup. Gemini and Ollama validate the same
-frozen golden cases through their shared structured contract.
+historical golden cases through their shared structured contract. The v2 rewrite
+validator now rejects the historical fixture that put container routing inside tool
+arguments; the fewer-recipient fixture requires explicit recipient authority.
+Provider tests supply this authority rather than weakening the gate.
 
 The threshold was selected as a conservative operating boundary for the
 prototype: values below a modest majority confidence require review, while

@@ -12,8 +12,8 @@ def policy():
 
 def test_policy_version_is_recorded():
     output = policy().evaluate("Calculate 2+2", call("calculator", {"expression": "2+2"}), [])
-    assert output.matched_rules[0] == "POLICY_VERSION=1.2.0"
-    assert policy().version == "1.2.0"
+    assert output.matched_rules[0] == "POLICY_VERSION=2.0.0"
+    assert policy().version == "2.0.0"
 
 
 def test_allow_benign_calculator():
@@ -158,10 +158,10 @@ def test_allows_benign_command_as_simulated():
     assert "POLICY_COMMAND_BENIGN" in output.matched_rules
 
 
-def test_blocks_unknown_tool():
+def test_escalates_unknown_tool():
     output = policy().evaluate("do something", call("delete_everything", {}), [])
-    assert output.decision is Decision.BLOCK
-    assert "POLICY_UNKNOWN_TOOL" in output.matched_rules
+    assert output.decision is Decision.ESCALATE
+    assert "unknown-tool-effect" in output.matched_rules
 
 
 def test_routes_declared_inputs_to_readonly_container_profile():

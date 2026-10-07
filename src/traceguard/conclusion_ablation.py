@@ -384,7 +384,8 @@ def _namespace_for_react(
         repeat_retries=args.repeat_retries,
         system_prompt=None,
         system_message=None,
-        dangerously_follow_tool_instructions=attack and args.dangerously_follow_tool_instructions,
+        dangerously_follow_tool_instructions=args.dangerously_follow_tool_instructions,
+        research_mode=True,
         disable_agent_action_guards=args.disable_agent_action_guards,
         tool_output_format=args.tool_output_format,
         camera_log_steps=args.camera_log_steps,
@@ -460,11 +461,20 @@ def _code_revision() -> str:
 
 
 def _conclusion_manifest(args: argparse.Namespace, output_dir: Path) -> dict[str, Any]:
+    from react_agentdojo.agentdojo_react_benchmark import resolved_agent_template
+
     root = Path(__file__).resolve().parents[2]
+    agent_template = resolved_agent_template(
+        research_mode=True, dangerous=args.dangerously_follow_tool_instructions
+    )
     agent_provider = getattr(args, "agent_provider", None) or args.provider
     supervisor_provider = getattr(args, "supervisor_provider", None) or args.provider
     prompt_paths = [
-        root / "src" / "traceguard" / "prompts" / "supervisor_v1.txt",
+        root / "src" / "traceguard" / "prompts" / "supervisor_v2.txt",
+        root / "src" / "traceguard" / "prompts" / "post_run_v1.txt",
+        root / "src" / "traceguard" / "data" / "policy" / "effects.json",
+        root / "src" / "traceguard" / "data" / "policy" / "default.json",
+        root / "react_agentdojo" / "agentdojo_react_benchmark.py",
         root / "src" / "traceguard" / "data" / "prompts" / "base_system.txt",
         root / "src" / "traceguard" / "data" / "prompts" / "defensive_system.txt",
     ]
@@ -491,7 +501,11 @@ def _conclusion_manifest(args: argparse.Namespace, output_dir: Path) -> dict[str
             "format_retries": args.format_retries,
             "repeat_retries": args.repeat_retries,
             "dangerously_follow_tool_instructions": args.dangerously_follow_tool_instructions,
-            "action_guards_disabled": args.disable_agent_action_guards,
+            "action_guards_disabled": True,
+            "research_mode": True,
+            "resolved_template_sha256": hashlib.sha256(agent_template.encode()).hexdigest(),
+            "resolved_template": agent_template,
+            "task_specific_fallbacks_enabled": False,
             "camera_log_steps": args.camera_log_steps,
         },
         "supervisor": {

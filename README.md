@@ -10,6 +10,36 @@ in [`docs/demo.md`](docs/demo.md). Supervisor precedence and label semantics are
 native environments, tool inventory, safety controls, and score interpretation are in
 [`docs/external_benchmarks.md`](docs/external_benchmarks.md).
 
+## Independent-project milestone
+
+The policy audit is in [`docs/policy_review_20261006.md`](docs/policy_review_20261006.md).
+The implementation and local pilot follow-up is in
+[`docs/hardening_and_pilot_20261006.md`](docs/hardening_and_pilot_20261006.md).
+Active contracts are `types-v3`, custom policy `2.0.0`, `effects-v1`, and supervisor
+`supervisor_v2.txt`. Historical custom results use older enforcement and the heuristic
+surrogate; they do not demonstrate incremental live-supervisor value.
+
+The current primary outcome is secure task completion. Missing authority and provider
+failures stop with `ESCALATE`; confirmed `BLOCK` permits at most two generic replans.
+
+```bash
+# Frozen 30 attacked + 30 authorized synthetic snapshot cases, then 12 matched live cases.
+# Each live case runs once under D and D+LLM (24 episodes); tools are disposable simulations.
+python -m benchmarks.semantic_pilot --model qwen3:1.7b --live \
+  --output artifacts/semantic_pilot_new_run
+
+# Inspect the native evaluation configuration before a larger run.
+python -m traceguard.conclusion_ablation --dry-run \
+  --agent-model qwen3:1.7b --supervisor-model qwen3:1.7b \
+  --output-dir artifacts/conclusion_new_protocol
+```
+
+Use a fresh output directory for each pilot. Its cases are development fixtures inspired
+by injection research, not a reproduction of an upstream benchmark. Native conclusion
+runs use a minimal research mode with task-specific correction/answer fallbacks disabled.
+Resolved prompts and hashes are saved with native runs. The vulnerable-agent flag is
+identical for clean and attacked runs and remains a separately labelled stress test.
+
 ## Setup
 
 ```bash

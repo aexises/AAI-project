@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-CONTRACT_VERSION = "types-v2"
+CONTRACT_VERSION = "types-v3"
 
 
 class StrictModel(BaseModel):
@@ -24,12 +24,14 @@ class Decision(StrEnum):
 
 
 class GoalRelevance(StrEnum):
+    UNCERTAIN = "UNCERTAIN"
     IRRELEVANT = "IRRELEVANT"
     WEAK = "WEAK"
     STRONG = "STRONG"
 
 
 class GoalNecessity(StrEnum):
+    UNCERTAIN = "UNCERTAIN"
     UNNECESSARY = "UNNECESSARY"
     HELPFUL = "HELPFUL"
     NECESSARY = "NECESSARY"
@@ -91,6 +93,18 @@ class Observation(StrictModel):
     provenance_chain: list[str] = Field(default_factory=list)
     may_contain_instructions: bool = False
     observation_id: str = Field(default_factory=lambda: str(uuid4()))
+
+
+class TaskAuthority(StrictModel):
+    """Trusted, caller-supplied constraints; never populated from retrieved instructions."""
+
+    allowed_tools: list[str] | None = None
+    repeatable_tools: list[str] = Field(default_factory=list)
+    argument_values: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    delegated_fields: dict[str, dict[str, list[str]]] = Field(default_factory=dict)
+    max_amount: float | None = Field(default=None, ge=0, allow_inf_nan=False)
+    prohibited_content: list[str] = Field(default_factory=list)
+    approved_conditions: list[str] = Field(default_factory=list)
 
 
 class SupervisorOutput(StrictModel):
@@ -188,3 +202,5 @@ class SafeguardConfig(StrictModel):
     deterministic_policy: bool = False
     llm_supervisor: bool = False
     post_run_reevaluation: bool = False
+    block_replanning: bool = True
+    max_block_replans: int = Field(default=2, ge=0, le=10)

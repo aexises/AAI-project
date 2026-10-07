@@ -5,8 +5,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any, Literal, Protocol
 
+from jsonschema import Draft202012Validator, SchemaError
+from jsonschema import ValidationError as JsonSchemaError
 from pydantic import Field, model_validator
+from referencing.exceptions import Unresolvable
 
+from traceguard.policy.authorization import check_authority, tool_effect
 from traceguard.types import (
     Decision,
     Observation,
@@ -14,6 +18,7 @@ from traceguard.types import (
     RiskLevel,
     SandboxEvidence,
     StrictModel,
+    TaskAuthority,
     ToolCall,
 )
 
@@ -55,6 +60,8 @@ class SupervisorRequest(StrictModel):
     user_goal: str
     proposed_call: ToolCall
     available_tools: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    trusted_policy: dict[str, Any] = Field(default_factory=dict)
+    task_authority: TaskAuthority = Field(default_factory=TaskAuthority)
     previous_calls: list[ToolCall] = Field(default_factory=list)
     observations: list[Observation] = Field(default_factory=list)
     argument_provenance: dict[str, list[str]] = Field(default_factory=dict)
@@ -138,6 +145,32 @@ def validate_rewrite_against_request(
     if tool_name not in request.available_tools:
         raise SupervisorSchemaError(f"rewritten tool does not exist: {tool_name}")
 
+    original_effect = tool_effect(request.proposed_call)
+    replacement = request.proposed_call.model_copy(
+        update={
+            "tool_name": tool_name,
+            "arguments": response.rewritten_call.arguments,
+        }
+    )
+    if original_effect == "read" and tool_effect(replacement) != "read":
+        raise SupervisorSchemaError("rewrite expands tool effects")
+    if tool_name != request.proposed_call.tool_name and tool_effect(replacement) != "read":
+        raise SupervisorSchemaError("mutating rewrite cannot change tool family")
+    for field in ("recipients", "to", "recipient", "participants", "requested_resources"):
+        old = request.proposed_call.arguments.get(field)
+        new = replacement.arguments.get(field)
+        if old is not None and new is not None:
+            old_set = set(old if isinstance(old, list) else [old])
+            new_set = set(new if isinstance(new, list) else [new])
+            if not new_set.issubset(old_set):
+                raise SupervisorSchemaError(f"rewrite expands {field}")
+    denied = check_authority(
+        request.user_goal, replacement, request.observations, request.task_authority
+    )
+    if denied is not None:
+        raise SupervisorSchemaError(f"rewrite violates authority: {denied.reason}")
+    if not set(replacement.requested_resources).issubset(request.proposed_call.requested_resources):
+        raise SupervisorSchemaError("rewrite expands requested resources")
     schema = request.available_tools[tool_name]
     _validate_arguments_against_json_schema(response.rewritten_call.arguments, schema)
 
@@ -145,23 +178,66 @@ def validate_rewrite_against_request(
 def _validate_arguments_against_json_schema(
     arguments: Mapping[str, Any], schema: Mapping[str, Any]
 ) -> None:
-    """Small schema check for provider tests and AgentDojo JSON schemas.
+    """Validate nested types, enums, bounds and references before approving effects."""
 
-    This intentionally validates the portable subset we need here: object type,
-    required keys, and no unknown top-level keys when properties are provided.
-    The real tool runtime still performs authoritative validation before execution.
-    """
+    def reject_remote_refs(value):
+        if isinstance(value, Mapping):
+            for keyword in ("$ref", "$dynamicRef", "$recursiveRef"):
+                if keyword in value and not str(value[keyword]).startswith("#"):
+                    raise SupervisorSchemaError("external schema references are not supported")
+            for child in value.values():
+                reject_remote_refs(child)
+        elif isinstance(value, list):
+            for child in value:
+                reject_remote_refs(child)
 
-    if schema.get("type") not in {None, "object"}:
-        raise SupervisorSchemaError("rewritten arguments schema must be an object")
-    properties = schema.get("properties") or {}
-    required = set(schema.get("required") or [])
-    missing = required - set(arguments)
-    if missing:
-        raise SupervisorSchemaError(f"rewritten arguments missing required keys: {sorted(missing)}")
-    if properties:
-        extra = set(arguments) - set(properties)
-        if extra:
-            raise SupervisorSchemaError(
-                f"rewritten arguments contain unknown keys: {sorted(extra)}"
-            )
+    reject_remote_refs(schema)
+    try:
+        Draft202012Validator.check_schema(schema)
+        Draft202012Validator(schema).validate(dict(arguments))
+    except (SchemaError, JsonSchemaError, Unresolvable) as exc:
+        raise SupervisorSchemaError("tool arguments failed JSON schema validation") from exc
+    properties = schema.get("properties")
+    if properties and set(arguments) - set(properties):
+        raise SupervisorSchemaError("tool arguments contain unknown keys")
+
+
+def validate_replacement(
+    original: ToolCall,
+    replacement: ToolCall,
+    *,
+    goal: str,
+    observations: list[Observation],
+    authority: TaskAuthority,
+    schemas: dict[str, dict[str, Any]],
+) -> None:
+    """Validate proposals from any supervisor, including injected test providers."""
+    if (
+        replacement.call_id != original.call_id
+        or replacement.consumed_observation_ids != original.consumed_observation_ids
+    ):
+        raise SupervisorSchemaError("rewrite changes call identity or observation context")
+    if replacement.task_id != original.task_id or replacement.step_id != original.step_id:
+        raise SupervisorSchemaError("rewrite changes task or logical step")
+    if not set(replacement.requested_resources).issubset(original.requested_resources):
+        raise SupervisorSchemaError("rewrite expands requested resources")
+    validate_rewrite_against_request(
+        SupervisorResponse(
+            decision=Decision.REWRITE,
+            goal_relevance="UNCERTAIN",
+            necessity="UNCERTAIN",
+            risk_level="MEDIUM",
+            confidence=1,
+            reason="validate replacement",
+            rewritten_call=RewrittenToolCall(
+                tool_name=replacement.tool_name, arguments=replacement.arguments
+            ),
+        ),
+        SupervisorRequest(
+            user_goal=goal,
+            proposed_call=original,
+            available_tools=schemas,
+            observations=observations,
+            task_authority=authority,
+        ),
+    )

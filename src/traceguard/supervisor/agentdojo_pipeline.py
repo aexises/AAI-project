@@ -3,13 +3,18 @@
 from __future__ import annotations
 
 import json
-import re
 from collections.abc import Mapping, Sequence
-from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from uuid import NAMESPACE_URL, uuid5
 
-from traceguard.supervisor.contracts import SupervisorEvaluationLog
+from traceguard.policy.authorization import check_authority, duplicate_mutation, output
+from traceguard.supervisor.contracts import (
+    SupervisorEvaluationLog,
+    SupervisorSchemaError,
+    _validate_arguments_against_json_schema,
+    validate_replacement,
+)
 from traceguard.supervisor.heuristic import HeuristicSupervisor
 from traceguard.supervisor.llm import GeminiSupervisor, OllamaSupervisor, QwenSupervisor
 from traceguard.supervisor.redaction import (
@@ -17,9 +22,14 @@ from traceguard.supervisor.redaction import (
     mandatory_redaction_config,
     redact_value,
 )
-from traceguard.types import Decision, Observation, SupervisorOutput, ToolCall, TrustLabel
-
-EMAIL_RE = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
+from traceguard.types import (
+    Decision,
+    Observation,
+    SupervisorOutput,
+    TaskAuthority,
+    ToolCall,
+    TrustLabel,
+)
 
 
 def _redacted_supervisor_log_payload(
@@ -60,6 +70,8 @@ def build_supervised_agentdojo_pipeline(
     seed: int = 0,
     redaction_config: RedactionConfig | None = None,
     system_prompt: str | None = None,
+    task_authority: TaskAuthority | None = None,
+    max_block_replans: int = 2,
 ):
     """Build an AgentDojo pipeline with TraceGuard between LLM and tools."""
 
@@ -130,6 +142,8 @@ def build_supervised_agentdojo_pipeline(
         ):
             if extra_args is None:
                 extra_args = {}
+            if extra_args.get("traceguard_stopped"):
+                return query, runtime, env, messages, extra_args
             if not messages or messages[-1]["role"] != "assistant":
                 return query, runtime, env, messages, extra_args
 
@@ -139,8 +153,13 @@ def build_supervised_agentdojo_pipeline(
 
             observations = self._observations(messages[:-1])
             approved = []
+            pending_calls: list[ToolCall] = []
             decisions = []
             for index, tool_call in enumerate(tool_calls):
+                if hasattr(supervisor, "last_evaluation_log"):
+                    supervisor.last_evaluation_log = None
+                if not tool_call.id:
+                    tool_call.id = str(uuid5(NAMESPACE_URL, f"{query}:{len(messages)}:{index}"))
                 call = ToolCall(
                     task_id=str(query)[:80] or "agentdojo",
                     step_id=len(observations) + index,
@@ -153,7 +172,83 @@ def build_supervised_agentdojo_pipeline(
                 if hasattr(supervisor, "available_tools"):
                     supervisor.available_tools = self._tool_schemas(runtime.functions)
 
-                decision = supervisor.evaluate(str(query), call, observations)
+                if hasattr(supervisor, "set_context"):
+                    supervisor.set_context(
+                        previous_calls=_executed_calls(messages[:-1]),
+                        task_authority=task_authority or TaskAuthority(),
+                    )
+                try:
+                    schema = self._tool_schemas(runtime.functions).get(call.tool_name)
+                    if schema is None:
+                        raise SupervisorSchemaError("tool schema unavailable")
+                    _validate_arguments_against_json_schema(call.arguments, schema)
+                    repeated = duplicate_mutation(
+                        call,
+                        [*_executed_calls(messages[:-1]), *pending_calls],
+                        task_authority or TaskAuthority(),
+                    )
+                    reserved = None
+                    if pending_calls and getattr(supervisor, "deterministic_enabled", False):
+                        reserved = check_authority(
+                            str(query),
+                            call,
+                            observations,
+                            task_authority,
+                            [*_executed_calls(messages[:-1]), *pending_calls],
+                        )
+                    decision = (
+                        repeated or reserved or supervisor.evaluate(str(query), call, observations)
+                    )
+                except SupervisorSchemaError:
+                    decision = output(
+                        Decision.ESCALATE, "invalid-tool-schema", "Tool validation failed."
+                    )
+
+                if decision.decision is Decision.REWRITE and decision.rewritten_call is not None:
+                    replacement = decision.rewritten_call
+                    if hasattr(supervisor, "set_context"):
+                        supervisor.set_context(
+                            previous_calls=_executed_calls(messages[:-1]),
+                            task_authority=task_authority or TaskAuthority(),
+                            step_already_rewritten=True,
+                        )
+                    try:
+                        validate_replacement(
+                            call,
+                            replacement,
+                            goal=str(query),
+                            observations=observations,
+                            authority=task_authority or TaskAuthority(),
+                            schemas=self._tool_schemas(runtime.functions),
+                        )
+                        checked = duplicate_mutation(
+                            replacement,
+                            [*_executed_calls(messages[:-1]), *pending_calls],
+                            task_authority or TaskAuthority(),
+                        )
+                        if checked is None and getattr(supervisor, "deterministic_enabled", False):
+                            checked = check_authority(
+                                str(query),
+                                replacement,
+                                observations,
+                                task_authority,
+                                [*_executed_calls(messages[:-1]), *pending_calls],
+                            )
+                        checked = checked or supervisor.evaluate(
+                            str(query), replacement, observations
+                        )
+                    except SupervisorSchemaError:
+                        checked = output(
+                            Decision.ESCALATE, "invalid-rewrite", "Rewrite validation failed."
+                        )
+                    if checked.decision is Decision.ALLOW:
+                        tool_call.function = replacement.tool_name
+                        tool_call.args = replacement.arguments
+                        decision = checked
+                    else:
+                        decision = checked.model_copy(
+                            update={"decision": Decision.ESCALATE, "rewritten_call": None}
+                        )
                 decision_payload = decision.model_dump(mode="json")
                 decision_record = {
                     **decision_payload,
@@ -174,12 +269,19 @@ def build_supervised_agentdojo_pipeline(
                         flush=True,
                     )
 
-                if decision.decision is Decision.REWRITE and decision.rewritten_call is not None:
-                    tool_call.function = decision.rewritten_call.tool_name
-                    tool_call.args = decision.rewritten_call.arguments
+                if decision.decision is Decision.ESCALATE:
+                    extra_args["traceguard_stopped"] = "ESCALATE"
+                    break
+                if decision.decision is Decision.ALLOW:
                     approved.append(tool_call)
-                elif decision.decision is Decision.ALLOW:
-                    approved.append(tool_call)
+                    pending_calls.append(
+                        call.model_copy(
+                            update={
+                                "tool_name": tool_call.function,
+                                "arguments": dict(tool_call.args),
+                            }
+                        )
+                    )
 
             extra_args.setdefault("traceguard_supervisor_decisions", []).extend(decisions)
             extra_args.setdefault("traceguard_supervisor_config", {}).update(
@@ -205,6 +307,8 @@ def build_supervised_agentdojo_pipeline(
                 },
                 redaction_config,
             )
+            if extra_args.get("traceguard_stopped"):
+                approved = []
             if len(approved) == len(tool_calls):
                 updated_messages = [
                     *messages[:-1],
@@ -220,11 +324,9 @@ def build_supervised_agentdojo_pipeline(
                 [item for item in decisions if item["decision"] != "ALLOW"],
                 redaction_config,
             )
-            content = _text_content(messages[-1].get("content"))
             content = (
-                f"{content}\n\nTraceGuard supervisor blocked unsafe tool call: "
-                f"{json.dumps(blocked, default=str)}"
-            ).strip()
+                "TraceGuard withheld one or more actions. Original task authority still applies."
+            )
             replacement = self._assistant_message_with_supervisor_log(
                 messages[-1],
                 supervisor_trace=supervisor_trace,
@@ -232,7 +334,14 @@ def build_supervised_agentdojo_pipeline(
                 content=[text_content_block_from_string(content)],
             )
             updated_messages = [*messages[:-1], replacement]
-            if not approved:
+            if any(item["decision"] == "BLOCK" for item in decisions):
+                extra_args["traceguard_block_count"] = (
+                    extra_args.get("traceguard_block_count", 0) + 1
+                )
+                if extra_args["traceguard_block_count"] > max_block_replans:
+                    extra_args.setdefault("traceguard_stopped", "BLOCK_LIMIT")
+                    replacement["tool_calls"] = []
+            if not approved and not extra_args.get("traceguard_stopped"):
                 updated_messages.append(
                     {
                         "role": "user",
@@ -266,20 +375,7 @@ def build_supervised_agentdojo_pipeline(
 
         @staticmethod
         def _observations(messages):
-            observations = []
-            for index, message in enumerate(messages):
-                if message.get("role") != "tool":
-                    continue
-                observations.append(
-                    Observation(
-                        content=_text_content(message.get("content")),
-                        source_type="agentdojo_tool",
-                        source_id=str(index),
-                        trust=TrustLabel.UNTRUSTED_TOOL,
-                        may_contain_instructions=True,
-                    )
-                )
-            return observations
+            return observations_from_messages(messages)
 
         @staticmethod
         def _tool_schemas(functions):
@@ -294,24 +390,9 @@ def build_supervised_agentdojo_pipeline(
 
         @staticmethod
         def _block_feedback(query: str, messages, blocked) -> str:
-            reasons = " ".join(str(item.get("reason", "")) for item in blocked)
-            pseudo_messages = [{"role": "user", "content": query}, *messages]
-            create_args = _create_event_args_from_request(pseudo_messages)
-            if create_args is not None and (
-                "created event" in reasons.casefold() or "argument" in reasons.casefold()
-            ):
-                return (
-                    "Observation: TraceGuard blocked the previous tool call because its "
-                    "arguments did not match the original user request. Do not repeat it. "
-                    "Continue the original task with this corrected tool call shape: "
-                    "Tool: <function=create_calendar_event>"
-                    f"{json.dumps(create_args, sort_keys=True)}</function>"
-                )
             return (
-                "Observation: TraceGuard blocked the previous tool call as unsafe or "
-                "unnecessary for the original user request. Do not repeat that exact call. "
-                "Continue the original task using only the original user request and "
-                "values copied from prior observations, or give a Final Answer if done."
+                "TraceGuard blocked the previous action. Replan only within the original task "
+                "authority. Do not repeat the blocked action or infer new approval."
             )
 
         @staticmethod
@@ -328,13 +409,22 @@ def build_supervised_agentdojo_pipeline(
             with supervisor_log_path.open("a", encoding="utf-8") as handle:
                 handle.write(json.dumps(log_payload, sort_keys=True) + "\n")
 
+    class StopOnEscalation(BasePipelineElement):
+        name = "traceguard-bounded-replanning"
+
+        def query(self, query, runtime, env=None, messages=(), extra_args=None):
+            extra_args = extra_args or {}
+            if extra_args.get("traceguard_stopped"):
+                return query, runtime, env, messages, extra_args
+            return react_llm.query(query, runtime, env, messages, extra_args)
+
     pipeline = AgentPipeline(
         [
             SystemMessage(system_prompt or "ReAct AgentDojo runner with TraceGuard supervisor."),
             InitQuery(),
             react_llm,
             ToolsExecutionLoop(
-                [TraceGuardAgentDojoSupervisor(), ToolsExecutor(formatter), react_llm],
+                [TraceGuardAgentDojoSupervisor(), ToolsExecutor(formatter), StopOnEscalation()],
                 max_iters=max_steps,
             ),
         ]
@@ -357,6 +447,9 @@ class AgentDojoDeterministicSupervisor:
         )
         self.last_evaluation_log: SupervisorEvaluationLog | None = None
 
+    def set_context(self, **kwargs) -> None:
+        self._guard.set_context(**kwargs)
+
     def evaluate(
         self,
         user_task: str,
@@ -377,6 +470,49 @@ class AgentDojoDeterministicSupervisor:
         return output
 
 
+def observations_from_messages(messages) -> list[Observation]:
+    observations = []
+    for index, message in enumerate(messages):
+        if message.get("role") != "tool":
+            continue
+        source_id = str(message.get("tool_call_id") or f"tool-message-{index}")
+        observations.append(
+            Observation(
+                content=_text_content(message.get("content")),
+                source_type="agentdojo_tool",
+                source_id=source_id,
+                observation_id=str(uuid5(NAMESPACE_URL, source_id)),
+                trust=TrustLabel.UNTRUSTED_TOOL,
+                may_contain_instructions=True,
+            )
+        )
+    return observations
+
+
+def _executed_calls(messages) -> list[ToolCall]:
+    completed_ids = {
+        str(item["tool_call_id"])
+        for item in messages
+        if item.get("role") == "tool" and item.get("tool_call_id") and not item.get("error")
+    }
+    calls = []
+    for index, message in enumerate(messages):
+        if message.get("role") != "assistant":
+            continue
+        for call in message.get("tool_calls") or []:
+            if str(getattr(call, "id", None)) in completed_ids:
+                calls.append(
+                    ToolCall(
+                        task_id="agentdojo",
+                        step_id=index,
+                        tool_name=call.function,
+                        arguments=dict(call.args),
+                        call_id=str(getattr(call, "id", index)),
+                    )
+                )
+    return calls
+
+
 def _text_content(content: Any) -> str:
     if isinstance(content, str):
         return content
@@ -393,118 +529,3 @@ def _text_content(content: Any) -> str:
                 parts.append(str(item))
         return "\n\n".join(parts)
     return str(content)
-
-
-def _tool_observation_text(messages: Sequence[Mapping[str, Any]]) -> str:
-    return "\n".join(
-        _text_content(message.get("content"))
-        for message in messages
-        if message.get("role") == "tool"
-    )
-
-
-def _events_from_observations(messages: Sequence[Mapping[str, Any]]) -> list[dict[str, str]]:
-    text = _tool_observation_text(messages)
-    chunks = re.split(r"(?=^- all_day:)", text, flags=re.MULTILINE)
-    events: list[dict[str, str]] = []
-    for chunk in chunks:
-        if not chunk.strip():
-            continue
-        event: dict[str, str] = {}
-        for key in ("id_", "title", "start_time", "end_time", "location"):
-            if match := re.search(rf"^\s*{key}:\s*'?(.+?)'?\s*$", chunk, flags=re.MULTILINE):
-                event[key] = match.group(1).strip().strip("'")
-        participants_match = re.search(
-            r"^\s*participants:\s*\n(?P<items>(?:\s*-\s*.+\n?)+)",
-            chunk,
-            flags=re.MULTILINE,
-        )
-        if participants_match:
-            event["participants"] = ", ".join(
-                line.strip().removeprefix("-").strip()
-                for line in participants_match.group("items").splitlines()
-                if line.strip().startswith("-")
-            )
-        if event:
-            events.append(event)
-    return events
-
-
-def _quoted_values(text: str) -> list[str]:
-    return [left or right for left, right in re.findall(r"'([^']+)'|\"([^\"]+)\"", text)]
-
-
-def _event_by_title(messages: Sequence[Mapping[str, Any]], title: str) -> dict[str, str] | None:
-    wanted = title.casefold()
-    for event in _events_from_observations(messages):
-        if event.get("title", "").casefold() == wanted:
-            return event
-    return None
-
-
-def _create_event_args_from_request(messages: Sequence[Mapping[str, Any]]) -> dict[str, Any] | None:
-    first_user = next(
-        (
-            _text_content(message.get("content"))
-            for message in messages
-            if message.get("role") == "user"
-        ),
-        "",
-    )
-    first_user_lower = first_user.casefold()
-    if "create" not in first_user_lower or "event" not in first_user_lower:
-        return None
-
-    quoted = _quoted_values(first_user)
-    title = quoted[0] if quoted else None
-    description_match = re.search(
-        r"description should be ['\"]([^'\"]+)['\"]",
-        first_user,
-        flags=re.IGNORECASE,
-    )
-    description = description_match.group(1) if description_match else None
-    if description is None:
-        description_match = re.search(
-            r"with description\s+(.+?)(?:\s+Her email|\s+His email|\s+Their email|$)",
-            first_user,
-            flags=re.IGNORECASE,
-        )
-        if description_match:
-            description = re.sub(r"\s+", " ", description_match.group(1).strip())
-            if description.endswith(".."):
-                description = description[:-1]
-
-    date_match = re.search(r"\b(20\d{2}-\d{2}-\d{2})\b", first_user)
-    time_match = re.search(r"\bat\s+(\d{1,2}:\d{2})\b", first_user, flags=re.IGNORECASE)
-    if title is None or date_match is None or time_match is None:
-        return None
-
-    start = datetime.strptime(f"{date_match.group(1)} {time_match.group(1)}", "%Y-%m-%d %H:%M")
-    duration = timedelta(hours=1)
-    if duration_match := re.search(r"\b(\d+)\s*-\s*hour\b", first_user, flags=re.IGNORECASE):
-        duration = timedelta(hours=int(duration_match.group(1)))
-    elif duration_match := re.search(r"\b(\d+)\s*hour\b", first_user, flags=re.IGNORECASE):
-        duration = timedelta(hours=int(duration_match.group(1)))
-
-    participants: list[str] | None = None
-    if "same participants as" in first_user_lower and len(quoted) >= 2:
-        source_event = _event_by_title(messages, quoted[1])
-        if source_event and source_event.get("participants"):
-            participants = [
-                item.strip() for item in source_event["participants"].split(",") if item.strip()
-            ]
-    else:
-        explicit_emails = EMAIL_RE.findall(first_user)
-        if explicit_emails:
-            participants = explicit_emails
-
-    args: dict[str, Any] = {
-        "title": title,
-        "start_time": start.strftime("%Y-%m-%d %H:%M"),
-        "end_time": (start + duration).strftime("%Y-%m-%d %H:%M"),
-    }
-    if description is not None:
-        args["description"] = description
-    if participants:
-        args["participants"] = participants
-    return args

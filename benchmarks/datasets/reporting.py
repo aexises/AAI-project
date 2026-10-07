@@ -64,6 +64,19 @@ def _ratio(numerator: int, denominator: int) -> float | None:
 def _diagnostic_metrics(
     rows: list[NormalizedBenchmarkResult],
 ) -> dict[str, float | int | None]:
+    measured = [
+        row for row in rows if row.native_scores.get("diagnostic_predicted_unsafe") is not None
+    ]
+    if not measured:
+        return {
+            "cases": len(rows),
+            "measured_cases": 0,
+            "accuracy": None,
+            "macro_f1": None,
+            "false_positive_rate": None,
+            "risk_description_quality": None,
+        }
+    rows = measured
     labels = [
         (
             bool(item.native_scores["diagnostic_gold_unsafe"]),

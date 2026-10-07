@@ -11,6 +11,7 @@ from pathlib import Path, PurePosixPath
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from traceguard.policy.authorization import check_authority, sensitive_path
 from traceguard.types import (
     Decision,
     ExecutionTarget,
@@ -19,6 +20,7 @@ from traceguard.types import (
     Observation,
     RiskLevel,
     SupervisorOutput,
+    TaskAuthority,
     ToolCall,
     TrustLabel,
 )
@@ -48,6 +50,8 @@ class PolicyConfig(BaseModel):
 class DeterministicPolicy:
     def __init__(self, config: PolicyConfig) -> None:
         self.config = config
+        self.task_authority = TaskAuthority()
+        self.previous_calls: list[ToolCall] = []
 
     @property
     def version(self) -> str:
@@ -59,7 +63,7 @@ class DeterministicPolicy:
         call: ToolCall,
         observations: list[Observation],
     ) -> SupervisorOutput:
-        resource_result = self._evaluate_requested_resources(call)
+        resource_result = self._evaluate_requested_resources(user_task, call, observations)
         if resource_result is not None:
             return resource_result
 
@@ -68,21 +72,35 @@ class DeterministicPolicy:
             return relevance_result
 
         if call.tool_name in {"read_file", "write_report"}:
-            return self._evaluate_path(user_task, call)
+            result = self._evaluate_path(user_task, call)
+            if result.decision is Decision.ALLOW:
+                denied = check_authority(
+                    user_task, call, observations, self.task_authority, self.previous_calls
+                )
+                if denied is not None:
+                    return denied
+            return result
+        denied = check_authority(
+            user_task, call, observations, self.task_authority, self.previous_calls
+        )
+        if denied is not None:
+            return denied
         if call.tool_name == "restricted_command":
             return self._evaluate_command(call, observations)
         if call.tool_name == "search_documents":
             return self._evaluate_search(call)
         if call.tool_name == "calculator":
             return self._allow(
-                "POLICY_TOOL_LOW_RISK", GoalRelevance.STRONG, GoalNecessity.NECESSARY
+                "POLICY_TOOL_LOW_RISK", GoalRelevance.UNCERTAIN, GoalNecessity.UNCERTAIN
             )
-        return self._block("POLICY_UNKNOWN_TOOL", RiskLevel.HIGH)
+        return self._escalate("POLICY_UNKNOWN_TOOL", "Tool effect is not registered.")
 
     def _version_rules(self, *rules: str) -> list[str]:
         return [f"POLICY_VERSION={self.config.version}", *rules]
 
-    def _evaluate_requested_resources(self, call: ToolCall) -> SupervisorOutput | None:
+    def _evaluate_requested_resources(
+        self, user_task: str, call: ToolCall, observations: list[Observation]
+    ) -> SupervisorOutput | None:
         if len(call.requested_resources) > self.config.max_requested_resources:
             return self._block("POLICY_EXCESSIVE_RESOURCES", RiskLevel.HIGH)
         privileged = {"network", "sudo", "docker", "host_fs", "privileged"}
@@ -95,6 +113,8 @@ class DeterministicPolicy:
             if not resource.startswith("input:"):
                 return self._block("POLICY_UNKNOWN_RESOURCE", RiskLevel.HIGH)
             raw_path = resource.removeprefix("input:")
+            if sensitive_path(raw_path, self.config.blocked_path_segments):
+                return self._block("POLICY_RESOURCE_PATH_SENSITIVE", RiskLevel.HIGH)
             path = PurePosixPath(raw_path)
             if (
                 path.is_absolute()
@@ -103,11 +123,37 @@ class DeterministicPolicy:
                 or path.parts[0] not in self.config.allowed_read_roots
             ):
                 return self._block("POLICY_RESOURCE_PATH_OUTSIDE_ROOT", RiskLevel.HIGH)
+            mentioned_paths = {
+                match.rstrip(".,:;!?") for match in re.findall(r"[\w.-]+(?:/[\w.-]+)+", user_task)
+            }
+            specified = "requested_resources" in self.task_authority.argument_values.get(
+                call.tool_name, {}
+            )
+            delegated = "requested_resources" in self.task_authority.delegated_fields.get(
+                call.tool_name, {}
+            )
+            if not specified and not delegated:
+                if not mentioned_paths:
+                    return self._escalate(
+                        "POLICY_RESOURCE_AUTHORITY_MISSING",
+                        "Declared inputs require trusted task scope.",
+                    )
+                if raw_path not in mentioned_paths:
+                    return self._block("POLICY_RESOURCE_NOT_AUTHORIZED", RiskLevel.HIGH)
         return None
 
     def _evaluate_goal_relevance(self, user_task: str, call: ToolCall) -> SupervisorOutput | None:
         task = user_task.casefold()
-        math_goal = _has_keyword(task, self.config.math_goal_keywords)
+        math_goal = _has_keyword(
+            task, [word for word in self.config.math_goal_keywords if word != "add"]
+        )
+        mixed_goal = _has_keyword(
+            task,
+            self.config.read_goal_keywords
+            + self.config.write_goal_keywords
+            + ["participants", "file", "document", "data"],
+        )
+        math_goal = math_goal and not mixed_goal
         write_goal = _has_keyword(task, self.config.write_goal_keywords)
         read_goal = _has_keyword(task, self.config.read_goal_keywords)
         shell_requested = _has_keyword(task, ["command", "shell", "terminal", "run", "execute"])
@@ -162,7 +208,9 @@ class DeterministicPolicy:
         query = str(call.arguments.get("query", "")).strip()
         if not query:
             return self._block("POLICY_SEARCH_EMPTY_QUERY", RiskLevel.LOW)
-        return self._allow("POLICY_SEARCH_ALLOWED", GoalRelevance.STRONG, GoalNecessity.HELPFUL)
+        return self._allow(
+            "POLICY_SEARCH_ALLOWED", GoalRelevance.UNCERTAIN, GoalNecessity.UNCERTAIN
+        )
 
     def _evaluate_path(self, user_task: str, call: ToolCall) -> SupervisorOutput:
         raw_path = str(call.arguments.get("path", ""))
@@ -173,17 +221,31 @@ class DeterministicPolicy:
             else self.config.allowed_write_roots
         )
 
-        if any(
-            segment.casefold() in {item.casefold() for item in self.config.blocked_path_segments}
-            for segment in path.parts
+        if call.tool_name == "read_file" and (
+            path.is_absolute() or ".." in path.parts or not path.parts or path.parts[0] not in roots
         ):
+            return self._block("POLICY_PATH_OUTSIDE_ROOT", RiskLevel.HIGH)
+        if path.is_absolute() or ".." in path.parts or not path.parts:
+            return self._block("POLICY_PATH_OUTSIDE_ROOT", RiskLevel.HIGH)
+        if sensitive_path(raw_path, self.config.blocked_path_segments):
             return self._block("POLICY_PATH_SENSITIVE", RiskLevel.CRITICAL)
-
         if call.tool_name == "read_file":
             mentioned_paths = {
                 match.rstrip(".,:;!?") for match in re.findall(r"[\w.-]+(?:/[\w.-]+)+", user_task)
             }
-            if mentioned_paths and raw_path not in mentioned_paths:
+            trusted_paths = self.task_authority.argument_values.get("read_file", {})
+            delegated = "path" in self.task_authority.delegated_fields.get("read_file", {})
+            if not mentioned_paths and not trusted_paths and not delegated:
+                return self._escalate(
+                    "POLICY_READ_AUTHORITY_MISSING",
+                    "File scope requires an explicit path or trusted delegation.",
+                )
+            if (
+                mentioned_paths
+                and raw_path not in mentioned_paths
+                and not trusted_paths
+                and not delegated
+            ):
                 return SupervisorOutput(
                     decision=Decision.BLOCK,
                     risk=RiskLevel.MEDIUM,
@@ -211,7 +273,7 @@ class DeterministicPolicy:
                         risk=RiskLevel.LOW,
                         confidence=1.0,
                         policy_violation=False,
-                        goal_relevance=GoalRelevance.STRONG,
+                        goal_relevance=GoalRelevance.WEAK,
                         goal_necessity=GoalNecessity.HELPFUL,
                         reason="Normalize report output into the allowed artifacts root.",
                         matched_rules=self._version_rules("POLICY_WRITE_ROOT_REWRITE"),
@@ -224,7 +286,7 @@ class DeterministicPolicy:
         if call.tool_name == "read_file" and path.parts[0] == "workspace" and len(path.parts) == 1:
             return self._block("POLICY_PATH_DIRECTORY_ONLY", RiskLevel.MEDIUM)
 
-        return self._allow("POLICY_PATH_ALLOWED", GoalRelevance.STRONG, GoalNecessity.HELPFUL)
+        return self._allow("POLICY_PATH_ALLOWED", GoalRelevance.UNCERTAIN, GoalNecessity.UNCERTAIN)
 
     def _evaluate_command(
         self, call: ToolCall, observations: list[Observation]
@@ -241,14 +303,13 @@ class DeterministicPolicy:
             return self._block("POLICY_COMMAND_TOO_LONG", RiskLevel.HIGH)
         if lowered.intersection(token.casefold() for token in self.config.blocked_command_tokens):
             return self._block("POLICY_COMMAND_BLOCKED_TOKEN", RiskLevel.CRITICAL)
-        if any(operator in rendered for operator in self.config.blocked_shell_operators):
+        if any(part in self.config.blocked_shell_operators for part in command):
             return self._block("POLICY_SHELL_OPERATOR", RiskLevel.HIGH)
 
         untrusted_dependencies = [
             obs
             for obs in observations
-            if obs.observation_id in call.consumed_observation_ids
-            and obs.trust in {TrustLabel.UNTRUSTED_DOCUMENT, TrustLabel.UNTRUSTED_TOOL}
+            if obs.trust in {TrustLabel.UNTRUSTED_DOCUMENT, TrustLabel.UNTRUSTED_TOOL}
         ]
         if untrusted_dependencies:
             injurious = any(_looks_like_instruction(obs.content) for obs in untrusted_dependencies)
@@ -269,7 +330,7 @@ class DeterministicPolicy:
                 risk=RiskLevel.MEDIUM,
                 confidence=0.85,
                 policy_violation=False,
-                goal_relevance=GoalRelevance.STRONG,
+                goal_relevance=GoalRelevance.WEAK,
                 goal_necessity=GoalNecessity.HELPFUL,
                 reason=(
                     "Command informed by untrusted input must use a predefined container profile."
@@ -291,7 +352,7 @@ class DeterministicPolicy:
                 risk=RiskLevel.MEDIUM,
                 confidence=0.85,
                 policy_violation=False,
-                goal_relevance=GoalRelevance.STRONG,
+                goal_relevance=GoalRelevance.WEAK,
                 goal_necessity=GoalNecessity.HELPFUL,
                 reason="Medium-risk command must use a predefined container profile.",
                 matched_rules=self._version_rules("POLICY_COMMAND_CONTAINER", declared_rule),
@@ -304,7 +365,7 @@ class DeterministicPolicy:
                 risk=RiskLevel.LOW,
                 confidence=1.0,
                 policy_violation=False,
-                goal_relevance=GoalRelevance.STRONG,
+                goal_relevance=GoalRelevance.WEAK,
                 goal_necessity=GoalNecessity.HELPFUL,
                 reason="Benign argv command allowed as simulated/default execution only.",
                 matched_rules=self._version_rules("POLICY_COMMAND_BENIGN"),
@@ -333,8 +394,8 @@ class DeterministicPolicy:
     def _allow(
         self,
         rule: str,
-        goal_relevance: GoalRelevance = GoalRelevance.STRONG,
-        goal_necessity: GoalNecessity = GoalNecessity.HELPFUL,
+        goal_relevance: GoalRelevance = GoalRelevance.UNCERTAIN,
+        goal_necessity: GoalNecessity = GoalNecessity.UNCERTAIN,
     ) -> SupervisorOutput:
         return SupervisorOutput(
             decision=Decision.ALLOW,
@@ -347,14 +408,26 @@ class DeterministicPolicy:
             matched_rules=self._version_rules(rule),
         )
 
+    def _escalate(self, rule: str, reason: str) -> SupervisorOutput:
+        return SupervisorOutput(
+            decision=Decision.ESCALATE,
+            risk=RiskLevel.MEDIUM,
+            confidence=1.0,
+            policy_violation=False,
+            goal_relevance=GoalRelevance.WEAK,
+            goal_necessity=GoalNecessity.HELPFUL,
+            reason=reason,
+            matched_rules=self._version_rules(rule),
+        )
+
     def _block(self, rule: str, risk: RiskLevel) -> SupervisorOutput:
         return SupervisorOutput(
             decision=Decision.BLOCK,
             risk=risk,
             confidence=1.0,
             policy_violation=True,
-            goal_relevance=GoalRelevance.IRRELEVANT,
-            goal_necessity=GoalNecessity.UNNECESSARY,
+            goal_relevance=GoalRelevance.UNCERTAIN,
+            goal_necessity=GoalNecessity.UNCERTAIN,
             reason="Deterministic policy denies the call.",
             matched_rules=self._version_rules(rule),
         )
