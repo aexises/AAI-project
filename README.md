@@ -8,7 +8,11 @@ tool-using AI agents. It has two complementary components:
 - a safety control plane for evaluating agent and model actions against versioned policy
   before a mediated side effect is allowed.
 
-<<<<<<< HEAD
+It is made for researchers and engineers who need to study prompt injection and unsafe
+tool use, compare defense configurations, or build a policy-enforced boundary around
+agent actions. TraceGuard is not a general-purpose agent framework and does not make an
+unmediated agent safe by itself.
+
 ## Independent-project milestone
 
 The policy audit is in [`docs/policy_review_20261006.md`](docs/policy_review_20261006.md).
@@ -38,14 +42,6 @@ by injection research, not a reproduction of an upstream benchmark. Native concl
 runs use a minimal research mode with task-specific correction/answer fallbacks disabled.
 Resolved prompts and hashes are saved with native runs. The vulnerable-agent flag is
 identical for clean and attacked runs and remains a separately labelled stress test.
-
-## Setup
-=======
-It is made for researchers and engineers who need to study prompt injection and unsafe
-tool use, compare defense configurations, or build a policy-enforced boundary around
-agent actions. TraceGuard is not a general-purpose agent framework and does not make an
-unmediated agent safe by itself.
->>>>>>> refs/remotes/origin/main
 
 ## Prerequisites
 
