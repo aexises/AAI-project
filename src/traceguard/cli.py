@@ -29,6 +29,7 @@ from traceguard.experiments import (
     run_experiment,
 )
 from traceguard.policy.engine import DeterministicPolicy, load_default_policy
+from traceguard.release import ReleaseValidationError, validate_release_artifacts
 from traceguard.runtime import TraceGuardRuntime
 from traceguard.sandbox.config import default_sandbox_configuration_path
 from traceguard.sandbox.runner import ContainerRunner, SandboxUnavailable
@@ -537,6 +538,31 @@ def _sandbox_benchmark(args: argparse.Namespace) -> int:
     return 0
 
 
+def _release_validate(args: argparse.Namespace) -> int:
+    manifests = args.manifest or [Path("deploy/kubernetes/control-plane.yaml")]
+    try:
+        validate_release_artifacts(
+            dockerfile=args.dockerfile,
+            manifests=manifests,
+            base_image=args.base_image,
+            release_image=args.release_image,
+        )
+    except ReleaseValidationError as exc:
+        print(json.dumps({"valid": False, "error": str(exc)}, indent=2), file=sys.stderr)
+        return 1
+    print(
+        json.dumps(
+            {
+                "valid": True,
+                "dockerfile": str(args.dockerfile),
+                "manifests": [str(path) for path in manifests],
+            },
+            indent=2,
+        )
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="traceguard")
     subparsers = parser.add_subparsers(dest="command", required=True)
@@ -713,6 +739,25 @@ def main(argv: list[str] | None = None) -> int:
     )
     sandbox_benchmark.add_argument("--runs", type=int, choices=range(1, 101), default=5)
 
+    release_validate = subparsers.add_parser(
+        "release-validate",
+        help="fail closed unless Docker and Kubernetes images use immutable sha256 digests",
+    )
+    release_validate.add_argument("--dockerfile", type=Path, default=Path("Dockerfile"))
+    release_validate.add_argument(
+        "--manifest",
+        type=Path,
+        action="append",
+        default=None,
+        help="Kubernetes manifest to validate; repeat for each manifest (default: control-plane)",
+    )
+    release_validate.add_argument("--base-image", required=True)
+    release_validate.add_argument(
+        "--release-image",
+        default=None,
+        help="immutable digest to substitute only for the checked-in release placeholder",
+    )
+
     subparsers.add_parser(
         "ablation",
         help="run a four-mode custom or AgentDojo ablation",
@@ -761,6 +806,8 @@ def main(argv: list[str] | None = None) -> int:
         except SandboxUnavailable as exc:
             print(json.dumps({"completed": False, "error": str(exc)}, indent=2))
             return 1
+    if args.command == "release-validate":
+        return _release_validate(args)
     return 2
 
 
